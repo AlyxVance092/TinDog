@@ -1,0 +1,5 @@
+[
+  {"dogId":"nala","name":"Nala","message":"Bruno y Nala podrían hacer una gran pareja. ¿Les gustaría conocernos?","status":"pending","time":"Hace 2 h"},
+  {"dogId":"maya","name":"Maya","message":"¡Hola! Nos encantaría platicar sobre una cruza responsable.","status":"accepted","time":"Ayer"},
+  {"dogId":"simba","name":"Simba","message":"Simba está buscando una compañera de su misma raza.","status":"pending","time":"Hace 3 días"}
+]

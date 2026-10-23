@@ -1,0 +1,14 @@
+{
+  "nala": [
+    {"text":"¡Hola! Bruno se ve encantador 🐶","mine":false,"time":"10:38"},
+    {"text":"¡Hola, Nala! Los dos tienen mucha energía ✨","mine":true,"time":"10:40","read":true},
+    {"text":"¿Cuándo les gustaría conocernos?","mine":false,"time":"10:42"}
+  ],
+  "maya": [
+    {"text":"Te comparto su cartilla de vacunas 😊","mine":false,"time":"Ayer"},
+    {"text":"¡Gracias! Todo se ve en orden.","mine":true,"time":"Ayer","read":true}
+  ],
+  "lola": [
+    {"text":"¡Qué emoción! 🐾","mine":false,"time":"Mar"}
+  ]
+}
