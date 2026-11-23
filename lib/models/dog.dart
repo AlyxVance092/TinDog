@@ -6,14 +6,18 @@ class Dog {
     required this.name,
     required this.breed,
     required this.age,
+    this.intention = 'playdate',
     this.birthDate,
     required this.sex,
     required this.location,
-    required this.distanceKm,
-    required this.compatibility,
+    this.distanceKm,
+    this.compatibility,
     required this.pedigree,
+    this.hasPedigree = false,
     required this.pedigreeNumber,
     required this.vaccines,
+    this.vaccineAppliedOn = const {},
+    this.vaccineLabelPhotos = const {},
     required this.photo,
     required this.about,
     required this.color,
@@ -23,14 +27,18 @@ class Dog {
   final String name;
   final String breed;
   final int age;
+  final String intention;
   final DateTime? birthDate;
   final String sex;
   final String location;
-  final int distanceKm;
-  final int compatibility;
+  final int? distanceKm;
+  final int? compatibility;
   final bool pedigree;
+  final bool hasPedigree;
   final String pedigreeNumber;
   final Map<String, String> vaccines;
+  final Map<String, String> vaccineAppliedOn;
+  final Map<String, String> vaccineLabelPhotos;
   final String photo;
   final String about;
   final String color;
@@ -45,15 +53,28 @@ class Dog {
     name: json['name'] as String,
     breed: json['breed'] as String,
     age: json['age'] as int,
+    intention: json['intention'] as String? ?? 'playdate',
     birthDate: DateTime.tryParse(json['birthDate'] as String? ?? ''),
     sex: json['sex'] as String,
     location: json['location'] as String,
-    distanceKm: json['distanceKm'] as int? ?? 1,
-    compatibility: json['compatibility'] as int? ?? 80,
+    distanceKm: json['distanceKm'] as int?,
+    compatibility: json['compatibility'] as int?,
     pedigree: json['pedigree'] as bool? ?? false,
+    hasPedigree:
+        json['hasPedigree'] as bool? ?? (json['pedigree'] as bool? ?? false),
     pedigreeNumber: json['pedigreeNumber'] as String? ?? '',
     vaccines: Map<String, String>.from(
       (json['vaccines'] as Map? ?? const {}).map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      ),
+    ),
+    vaccineAppliedOn: Map<String, String>.from(
+      (json['vaccineAppliedOn'] as Map? ?? const {}).map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      ),
+    ),
+    vaccineLabelPhotos: Map<String, String>.from(
+      (json['vaccineLabelPhotos'] as Map? ?? const {}).map(
         (key, value) => MapEntry(key.toString(), value.toString()),
       ),
     ),
@@ -67,14 +88,18 @@ class Dog {
     'name': name,
     'breed': breed,
     'age': age,
+    'intention': intention,
     'birthDate': birthDate?.toIso8601String(),
     'sex': sex,
     'location': location,
     'distanceKm': distanceKm,
     'compatibility': compatibility,
     'pedigree': pedigree,
+    'hasPedigree': hasPedigree,
     'pedigreeNumber': pedigreeNumber,
     'vaccines': vaccines,
+    'vaccineAppliedOn': vaccineAppliedOn,
+    'vaccineLabelPhotos': vaccineLabelPhotos,
     'photo': photo,
     'about': about,
     'color': color,

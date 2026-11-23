@@ -77,7 +77,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         icon: const Icon(Icons.delete_outline_rounded, color: TinColors.coral),
         title: Text('Eliminar a ${dog.name}?'),
         content: const Text(
-          'Se borrará su perfil y la foto guardada en este dispositivo.',
+          'Su perfil dejará de aparecer en Descubrir. Las conversaciones existentes se conservarán.',
         ),
         actions: [
           TextButton(
@@ -94,7 +94,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
     );
     if (confirmed != true) return;
-    await widget.repository.deleteDog(dog.id);
+    try {
+      await widget.repository.deleteDog(dog.id);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No pudimos actualizar ese perfil.')),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     _refreshCountsAndDogs();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -143,8 +152,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final first = widget.email.split('@').first;
-    final name = widget.email == 'demo@tindog.mx'
-        ? 'Familia Demo'
+    final savedName = widget.repository.displayName?.trim();
+    final name = savedName != null && savedName.isNotEmpty
+        ? savedName
         : first
               .split(RegExp(r'[._-]'))
               .map(

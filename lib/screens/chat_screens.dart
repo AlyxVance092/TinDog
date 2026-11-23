@@ -466,17 +466,24 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scroll = ScrollController();
   late Future<List<ChatMessage>> _future;
   List<ChatMessage> _messages = [];
-  bool _typing = false;
-  Timer? _replyTimer;
+  StreamSubscription<List<ChatMessage>>? _messageSubscription;
   @override
   void initState() {
     super.initState();
     _future = widget.repository.messages(widget.dogId);
+    _messageSubscription = widget.repository.watchMessages(widget.dogId).listen(
+      (messages) {
+        if (!mounted) return;
+        setState(() => _messages = messages);
+        _toBottom();
+      },
+      onError: (_) {},
+    );
   }
 
   @override
   void dispose() {
-    _replyTimer?.cancel();
+    _messageSubscription?.cancel();
     _controller.dispose();
     _scroll.dispose();
     super.dispose();
@@ -493,29 +500,29 @@ class _ChatScreenState extends State<ChatScreen> {
       time: _time(),
       read: false,
     );
-    await widget.repository.sendMessage(widget.dogId, message);
+    try {
+      await widget.repository.sendMessage(widget.dogId, message);
+    } catch (_) {
+      if (mounted) {
+        _controller.text = text;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No pudimos enviar el mensaje.')),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    List<ChatMessage> messages;
+    try {
+      messages = await widget.repository.messages(widget.dogId);
+    } catch (_) {
+      messages = [..._messages, message];
+    }
     if (!mounted) return;
     setState(() {
-      _messages.add(message);
-      _typing = true;
+      _messages = messages;
     });
     _toBottom();
-    _replyTimer?.cancel();
-    _replyTimer = Timer(const Duration(milliseconds: 2300), () async {
-      const reply = ChatMessage(
-        text: '¡Qué gusto! A nosotros también nos emociona conocernos 🐾',
-        mine: false,
-        time: 'Ahora',
-      );
-      await widget.repository.sendMessage(widget.dogId, reply);
-      if (mounted) {
-        setState(() {
-          _typing = false;
-          _messages.add(reply);
-        });
-        _toBottom();
-      }
-    });
   }
 
   Future<void> _clearConversation() async {
@@ -524,9 +531,7 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (context) => AlertDialog(
         icon: const Icon(Icons.delete_sweep_rounded, color: TinColors.coral),
         title: const Text('Vaciar conversación?'),
-        content: const Text(
-          'Se borrarán los mensajes guardados en este dispositivo.',
-        ),
+        content: const Text('Se eliminarán tus mensajes de esta conversación.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -542,16 +547,26 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (confirmed != true) return;
-    _replyTimer?.cancel();
-    await widget.repository.clearConversation(widget.dogId);
+    List<ChatMessage> messages;
+    try {
+      await widget.repository.clearConversation(widget.dogId);
+      messages = await widget.repository.messages(widget.dogId);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No pudimos eliminar tus mensajes.')),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     setState(() {
-      _messages.clear();
-      _typing = false;
-      _future = Future.value(const <ChatMessage>[]);
+      _messages = messages;
+      _future = Future.value(messages);
     });
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Conversación vaciada.')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Tus mensajes se eliminaron.')),
+    );
   }
 
   String _time() {
@@ -619,25 +634,26 @@ class _ChatScreenState extends State<ChatScreen> {
                       ],
                     ),
                   ),
-                  PopupMenuButton<String>(
-                    tooltip: 'Opciones de chat',
-                    icon: const Icon(Icons.more_horiz_rounded),
-                    onSelected: (value) {
-                      if (value == 'clear') _clearConversation();
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(
-                        value: 'clear',
-                        child: Row(
-                          children: [
-                            Icon(Icons.delete_sweep_rounded, size: 19),
-                            SizedBox(width: 9),
-                            Text('Vaciar conversación'),
-                          ],
+                  if (widget.repository.canClearConversation)
+                    PopupMenuButton<String>(
+                      tooltip: 'Opciones de chat',
+                      icon: const Icon(Icons.more_horiz_rounded),
+                      onSelected: (value) {
+                        if (value == 'clear') _clearConversation();
+                      },
+                      itemBuilder: (context) => const [
+                        PopupMenuItem(
+                          value: 'clear',
+                          child: Row(
+                            children: [
+                              Icon(Icons.delete_sweep_rounded, size: 19),
+                              SizedBox(width: 9),
+                              Text('Vaciar conversación'),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
                 ],
               ),
             ),
@@ -759,7 +775,6 @@ class _ChatScreenState extends State<ChatScreen> {
                         index: entry.key,
                       ),
                     ),
-                    if (_typing) const _TypingDots(),
                   ],
                 );
               },
@@ -953,69 +968,6 @@ class _DoubleCheck extends StatelessWidget {
       Icons.done_all_rounded,
       size: 14,
       color: Color.lerp(Colors.white54, const Color(0xFFB4F6DC), value),
-    ),
-  );
-}
-
-class _TypingDots extends StatefulWidget {
-  const _TypingDots();
-  @override
-  State<_TypingDots> createState() => _TypingDotsState();
-}
-
-class _TypingDotsState extends State<_TypingDots>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 750),
-  )..repeat();
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Align(
-    alignment: Alignment.centerLeft,
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).brightness == Brightness.dark
-            ? TinColors.darkCard
-            : Colors.white,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: List.generate(
-          3,
-          (index) => AnimatedBuilder(
-            animation: _controller,
-            builder: (_, _) {
-              final phase = (_controller.value - index * .2).abs();
-              final bump = motionReduced
-                  ? 0.0
-                  : 1 - (phase > .5 ? 1 - phase : phase) * 1.4;
-              return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 2),
-                child: Transform.translate(
-                  offset: Offset(0, -4 * bump),
-                  child: Container(
-                    width: 6,
-                    height: 6,
-                    decoration: const BoxDecoration(
-                      color: TinColors.coral,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
     ),
   );
 }

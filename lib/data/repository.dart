@@ -7,10 +7,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/dog.dart';
 
+enum RegistrationResult { signedIn, confirmationRequired, alreadyRegistered }
+
 abstract class TinDogRepository {
+  String? get displayName;
+  bool get canReplayDiscovery;
+  bool get canClearConversation;
+  bool get canStorePickedPhotos;
+  bool get canEditHealthRecords;
+  bool get canStoreHealthLabels;
+  bool get supportsDistanceFilter;
   Future<String?> restoreSession();
   Future<bool> login(String email, String password);
-  Future<bool> register(String name, String email, String password);
+  Future<RegistrationResult> register(
+    String name,
+    String email,
+    String password,
+  );
   Future<void> logout();
   Future<List<Dog>> discoverDogs();
   Future<void> resetDiscovery();
@@ -19,13 +32,18 @@ abstract class TinDogRepository {
   Future<void> addDog(Dog dog);
   Future<void> updateDog(Dog dog);
   Future<void> deleteDog(String dogId);
-  Future<void> swipe(String dogId, {required bool liked});
-  Future<void> sendRequest(Dog dog);
+  Future<String?> swipe(
+    String dogId, {
+    required bool liked,
+    bool superLike = false,
+  });
+  Future<String?> sendRequest(Dog dog);
   Future<List<String>> likedDogs();
   Future<List<Map<String, dynamic>>> matches();
   Future<List<Map<String, dynamic>>> requests();
   Future<void> answerRequest(String dogId, {required bool accept});
   Future<List<ChatMessage>> messages(String dogId);
+  Stream<List<ChatMessage>> watchMessages(String dogId);
   Future<void> sendMessage(String dogId, ChatMessage message);
   Future<void> clearConversation(String dogId);
 }
@@ -38,6 +56,27 @@ class LocalTinDogRepository implements TinDogRepository {
   final SharedPreferences _preferences;
   static const _delay = Duration(milliseconds: 700);
   List<Dog>? _catalog;
+
+  @override
+  String? get displayName => _preferences.getString('displayName');
+
+  @override
+  bool get canReplayDiscovery => true;
+
+  @override
+  bool get canClearConversation => true;
+
+  @override
+  bool get canStorePickedPhotos => true;
+
+  @override
+  bool get canEditHealthRecords => true;
+
+  @override
+  bool get canStoreHealthLabels => false;
+
+  @override
+  bool get supportsDistanceFilter => true;
 
   Future<List<Dog>> _loadCatalog() async {
     if (_catalog case final list?) return list;
@@ -85,7 +124,11 @@ class LocalTinDogRepository implements TinDogRepository {
   }
 
   @override
-  Future<bool> register(String name, String email, String password) async {
+  Future<RegistrationResult> register(
+    String name,
+    String email,
+    String password,
+  ) async {
     await Future<void>.delayed(const Duration(milliseconds: 650));
     final users = jsonDecode(
       _preferences.getString('users') ?? '{}',
@@ -93,13 +136,13 @@ class LocalTinDogRepository implements TinDogRepository {
     final normalizedEmail = email.trim().toLowerCase();
     if (normalizedEmail == 'demo@tindog.mx' ||
         users.containsKey(normalizedEmail)) {
-      return false;
+      return RegistrationResult.alreadyRegistered;
     }
     users[normalizedEmail] = password;
     await _preferences.setString('users', jsonEncode(users));
     await _preferences.setString('displayName', name.trim());
     await _preferences.setString('sessionEmail', normalizedEmail);
-    return true;
+    return RegistrationResult.signedIn;
   }
 
   @override
@@ -198,7 +241,11 @@ class LocalTinDogRepository implements TinDogRepository {
   }
 
   @override
-  Future<void> swipe(String dogId, {required bool liked}) async {
+  Future<String?> swipe(
+    String dogId, {
+    required bool liked,
+    bool superLike = false,
+  }) async {
     final seen = _readList('seenDogs').map((e) => e.toString()).toSet()
       ..add(dogId);
     await _writeList('seenDogs', seen.toList());
@@ -207,15 +254,19 @@ class LocalTinDogRepository implements TinDogRepository {
         ..add(dogId);
       await _writeList('likedDogs', likedSet.toList());
     }
+    return liked ? 'liked' : 'passed';
   }
 
   @override
-  Future<void> sendRequest(Dog dog) async {
+  Future<String?> sendRequest(Dog dog) async {
     final sent = _readList('sentRequests')
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
-    if (sent.any((request) => request['dogId'] == dog.id)) return;
+    if (sent.any((request) => request['dogId'] == dog.id)) {
+      return 'request_sent';
+    }
     sent.insert(0, {
+      'requestId': dog.id,
       'dogId': dog.id,
       'name': dog.name,
       'status': 'pending',
@@ -223,6 +274,7 @@ class LocalTinDogRepository implements TinDogRepository {
       'time': 'Ahora',
     });
     await _writeList('sentRequests', sent);
+    return 'request_sent';
   }
 
   @override
@@ -254,6 +306,7 @@ class LocalTinDogRepository implements TinDogRepository {
       _preferences.getString('requestStatuses') ?? '{}',
     ) as Map<String, dynamic>;
     for (final request in result) {
+      request['requestId'] ??= request['dogId'];
       if (statuses.containsKey(request['dogId'])) {
         request['status'] = statuses[request['dogId']];
       }
@@ -311,6 +364,11 @@ class LocalTinDogRepository implements TinDogRepository {
         .toList();
     await _writeMessages(dogId, seeded);
     return seeded;
+  }
+
+  @override
+  Stream<List<ChatMessage>> watchMessages(String dogId) async* {
+    yield await messages(dogId);
   }
 
   Future<void> _writeMessages(String dogId, List<ChatMessage> messages) =>

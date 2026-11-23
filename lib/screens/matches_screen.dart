@@ -527,6 +527,12 @@ class _RequestTileState extends State<_RequestTile>
       if (!mounted) return;
       HapticFeedback.heavyImpact();
       widget.onChanged();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No pudimos aceptar la solicitud.')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _opening = false);
     }
@@ -536,6 +542,7 @@ class _RequestTileState extends State<_RequestTile>
   Widget build(BuildContext context) {
     final item = widget.item;
     final id = item['dogId'] as String;
+    final requestId = (item['requestId'] ?? id).toString();
     final sent = item['direction'] == 'sent';
     final status = item['status'] as String? ?? 'pending';
     return GlassCard(
@@ -598,11 +605,23 @@ class _RequestTileState extends State<_RequestTile>
                         child: OutlinedButton(
                           onPressed: () async {
                             HapticFeedback.selectionClick();
-                            await widget.repository.answerRequest(
-                              id,
-                              accept: false,
-                            );
-                            widget.onChanged();
+                            try {
+                              await widget.repository.answerRequest(
+                                requestId,
+                                accept: false,
+                              );
+                              widget.onChanged();
+                            } catch (_) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'No pudimos rechazar la solicitud.',
+                                    ),
+                                  ),
+                                );
+                              }
+                            }
                           },
                           style: OutlinedButton.styleFrom(
                             foregroundColor: Theme.of(context).hintColor,
@@ -622,7 +641,7 @@ class _RequestTileState extends State<_RequestTile>
                       child: SizedBox(
                         height: 42,
                         child: FilledButton.icon(
-                          onPressed: () => _accept(id),
+                          onPressed: () => _accept(requestId),
                           icon: const Icon(Icons.check_rounded, size: 17),
                           label: const Text('Aceptar'),
                           style: FilledButton.styleFrom(

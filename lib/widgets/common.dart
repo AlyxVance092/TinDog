@@ -104,6 +104,15 @@ class DogPortrait extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final path = dog.photo;
+    final uri = Uri.tryParse(path);
+    if (uri != null && (uri.scheme == 'https' || uri.scheme == 'http')) {
+      return Image.network(
+        path,
+        fit: fit,
+        alignment: alignment,
+        errorBuilder: (_, _, _) => _fallback(),
+      );
+    }
     if (!path.startsWith('assets/')) {
       final image = File(path);
       if (image.existsSync()) {

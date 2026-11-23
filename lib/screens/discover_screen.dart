@@ -96,7 +96,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final filtered = allDogs
         .where(
           (dog) =>
-              dog.distanceKm <= _distance &&
+              (dog.distanceKm == null || dog.distanceKm! <= _distance) &&
               (!_pedigreeOnly || dog.pedigree) &&
               (_sex == 'Todos' || dog.sex == _sex),
         )
@@ -162,7 +162,27 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       }
     });
     await Future<void>.delayed(Duration(milliseconds: motionReduced ? 0 : 260));
-    await widget.repository.swipe(dog.id, liked: liked);
+    String? swipeResult;
+    try {
+      swipeResult = await widget.repository.swipe(
+        dog.id,
+        liked: liked,
+        superLike: superLike,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _drag = Offset.zero;
+        _tilt = Offset.zero;
+        _swiping = false;
+        _showParticles = false;
+        _activitySuccess = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No pudimos guardar el deslizamiento.')),
+      );
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _index++;
@@ -171,47 +191,22 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       _swiping = false;
     });
     if (_index >= _dogs.length) _reload();
-    if (liked) {
-      final likedDogs = await widget.repository.likedDogs();
-      if (likedDogs.length % 3 == 0 && mounted) _showMatch(dog);
+    if (swipeResult == 'match') {
+      final ownDogs = await widget.repository.myDogs();
+      if (!mounted || ownDogs.isEmpty) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => MatchCelebration(
+          dog: dog,
+          myDog: ownDogs.first,
+          onChat: () {
+            Navigator.pop(dialogContext);
+            widget.onChat(dog.id, dog.name);
+          },
+        ),
+      );
     }
-  }
-
-  Future<void> _showMatch(Dog dog) async {
-    HapticFeedback.heavyImpact();
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    HapticFeedback.heavyImpact();
-    if (!mounted) return;
-    final myDogs = await widget.repository.myDogs();
-    final myDog = myDogs.isEmpty ? null : myDogs.first;
-    if (!mounted) return;
-    _stopSensor();
-    var openedChat = false;
-    await showGeneralDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: 'Match',
-      barrierColor: TinColors.ink.withValues(alpha: .76),
-      transitionDuration: Duration(milliseconds: motionReduced ? 0 : 360),
-      pageBuilder: (context, _, _) => MatchCelebration(
-        dog: dog,
-        myDog: myDog,
-        onChat: () {
-          openedChat = true;
-          Navigator.pop(context);
-          widget.onChat(dog.id, dog.name);
-        },
-      ),
-      transitionBuilder: (context, animation, secondary, child) =>
-          ScaleTransition(
-            scale: CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOutBack,
-            ),
-            child: FadeTransition(opacity: animation, child: child),
-          ),
-    );
-    if (mounted && widget.active && !openedChat) _startSensor();
   }
 
   Future<void> _openDogDetail(Dog dog) async {
@@ -291,33 +286,35 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                       subtitle: 'Encuentra perfiles que hacen match',
                     ),
                     const SizedBox(height: 23),
-                    Row(
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'Distancia máxima',
-                            style: TextStyle(fontWeight: FontWeight.w800),
+                    if (widget.repository.supportsDistanceFilter) ...[
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Distancia máxima',
+                              style: TextStyle(fontWeight: FontWeight.w800),
+                            ),
                           ),
-                        ),
-                        Text(
-                          '${distance.round()} km',
-                          style: const TextStyle(
-                            color: TinColors.coral,
-                            fontWeight: FontWeight.w900,
+                          Text(
+                            '${distance.round()} km',
+                            style: const TextStyle(
+                              color: TinColors.coral,
+                              fontWeight: FontWeight.w900,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      value: distance,
-                      min: 5,
-                      max: 100,
-                      divisions: 19,
-                      activeColor: TinColors.coral,
-                      onChanged: (v) => setModal(() => distance = v),
-                      onChangeEnd: (_) => HapticFeedback.selectionClick(),
-                    ),
-                    const SizedBox(height: 10),
+                        ],
+                      ),
+                      Slider(
+                        value: distance,
+                        min: 5,
+                        max: 100,
+                        divisions: 19,
+                        activeColor: TinColors.coral,
+                        onChanged: (v) => setModal(() => distance = v),
+                        onChangeEnd: (_) => HapticFeedback.selectionClick(),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                     const Text(
                       'Buscar',
                       style: TextStyle(fontWeight: FontWeight.w800),
@@ -451,8 +448,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                     duration: Duration(milliseconds: motionReduced ? 0 : 240),
                     child: Text(
                       _dogs.isEmpty
-                          ? 'LISTA LOCAL'
-                          : '${math.max(0, _dogs.length - _index)} CERCA',
+                          ? 'BASE ACTIVA'
+                          : '${math.max(0, _dogs.length - _index)} PERFILES',
                       key: ValueKey('${_dogs.length}-$_index'),
                       style: TextStyle(
                         color: Theme.of(context).hintColor,
@@ -483,7 +480,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   return _empty(
                     '¡Ya viste a toda la manada!',
                     Icons.pets_rounded,
-                    _replayManada,
+                    widget.repository.canReplayDiscovery ? _replayManada : null,
                     button: 'Volver a ver perfiles',
                   );
                 }
@@ -638,7 +635,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   Widget _empty(
     String message,
     IconData icon,
-    VoidCallback retry, {
+    VoidCallback? retry, {
     String button = 'Intentar de nuevo',
   }) => Center(
     child: GlassCard(
@@ -652,17 +649,19 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             style: const TextStyle(fontWeight: FontWeight.w800),
             textAlign: TextAlign.center,
           ),
-          const SizedBox(height: 14),
-          PressScale(
-            onTap: retry,
-            child: Text(
-              button,
-              style: const TextStyle(
-                color: TinColors.coral,
-                fontWeight: FontWeight.w900,
+          if (retry != null) ...[
+            const SizedBox(height: 14),
+            PressScale(
+              onTap: retry,
+              child: Text(
+                button,
+                style: const TextStyle(
+                  color: TinColors.coral,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
             ),
-          ),
+          ],
         ],
       ),
     ),
@@ -1102,9 +1101,10 @@ class _DogCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final displayDrag = drag + Offset(tilt.dx * 12, tilt.dy * 8);
     final radians = (drag.dx / 640).clamp(-.25, .25) + tilt.dx * .09;
-    final rarityColor = dog.compatibility >= 95
+    final compatibility = dog.compatibility ?? 0;
+    final rarityColor = compatibility >= 95
         ? const Color(0xFFFFC857)
-        : dog.compatibility >= 85
+        : compatibility >= 85
         ? TinColors.coral
         : TinColors.green;
     final card = Hero(
@@ -1166,44 +1166,46 @@ class _DogCard extends StatelessWidget {
                   ),
                 ),
               ),
-            Positioned(
-              left: 14 + tilt.dx * 2,
-              top: 14 + tilt.dy * 2,
-              child: const VerifiedPill(),
-            ),
-            Positioned(
-              right: 14 + tilt.dx * 3,
-              top: 14 + tilt.dy * 2,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 11,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: .9),
-                  borderRadius: BorderRadius.circular(30),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.favorite_rounded,
-                      size: 15,
-                      color: TinColors.coral,
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      '${dog.compatibility}%',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w900,
-                        color: TinColors.ink,
+            if (dog.pedigree)
+              Positioned(
+                left: 14 + tilt.dx * 2,
+                top: 14 + tilt.dy * 2,
+                child: const VerifiedPill(),
+              ),
+            if (dog.compatibility != null)
+              Positioned(
+                right: 14 + tilt.dx * 3,
+                top: 14 + tilt.dy * 2,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 11,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: .9),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.favorite_rounded,
+                        size: 15,
+                        color: TinColors.coral,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 5),
+                      Text(
+                        '${dog.compatibility}%',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                          color: TinColors.ink,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
             if (drag.dx.abs() > 40)
               Positioned(
                 left: drag.dx > 0 ? 22 : null,
@@ -1242,46 +1244,51 @@ class _DogCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: .29),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: rarityColor.withValues(alpha: .7),
+                  if (dog.compatibility != null)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 9,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: .29),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: rarityColor.withValues(alpha: .7),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.star_rounded,
+                            color: rarityColor,
+                            size: 12,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            compatibility >= 95
+                                ? 'QUÍMICA ESTELAR · ★★★★★'
+                                : compatibility >= 85
+                                ? 'MUY BUENA QUÍMICA · ★★★★'
+                                : 'BUENA QUÍMICA · ★★★',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 8,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: .35,
+                              shadows: [
+                                Shadow(
+                                  color: rarityColor.withValues(alpha: .9),
+                                  blurRadius: compatibility >= 95 ? 8 : 3,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.star_rounded, color: rarityColor, size: 12),
-                        const SizedBox(width: 4),
-                        Text(
-                          dog.compatibility >= 95
-                              ? 'QUÍMICA ESTELAR · ★★★★★'
-                              : dog.compatibility >= 85
-                              ? 'MUY BUENA QUÍMICA · ★★★★'
-                              : 'BUENA QUÍMICA · ★★★',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 8,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: .35,
-                            shadows: [
-                              Shadow(
-                                color: rarityColor.withValues(alpha: .9),
-                                blurRadius: dog.compatibility >= 95 ? 8 : 3,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                   if (dog.pedigree)
                     Container(
                       margin: const EdgeInsets.only(bottom: 8),
@@ -1334,7 +1341,9 @@ class _DogCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 3),
                       Text(
-                        '${dog.distanceKm} km · ${dog.location}',
+                        dog.distanceKm == null
+                            ? dog.location
+                            : '${dog.distanceKm} km · ${dog.location}',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 11,
@@ -1384,10 +1393,10 @@ class _DogCard extends StatelessWidget {
           boxShadow: [
             BoxShadow(
               color: rarityColor.withValues(
-                alpha: dog.compatibility >= 95 ? .28 : .14,
+                alpha: compatibility >= 95 ? .28 : .14,
               ),
-              blurRadius: dog.compatibility >= 95 ? 34 : 22,
-              spreadRadius: dog.compatibility >= 95 ? 1 : 0,
+              blurRadius: compatibility >= 95 ? 34 : 22,
+              spreadRadius: compatibility >= 95 ? 1 : 0,
               offset: const Offset(0, 10),
             ),
           ],
@@ -1427,6 +1436,7 @@ class MatchCelebration extends StatefulWidget {
 class _MatchCelebrationState extends State<MatchCelebration>
     with SingleTickerProviderStateMixin {
   late final AnimationController _fall;
+  int get _compatibility => widget.dog.compatibility ?? 0;
 
   @override
   void initState() {
@@ -1452,7 +1462,7 @@ class _MatchCelebrationState extends State<MatchCelebration>
         children: [
           if (!motionReduced)
             ...List.generate(
-              widget.dog.compatibility >= 95 ? 30 : 18,
+              _compatibility >= 95 ? 30 : 18,
               (i) => AnimatedBuilder(
                 animation: _fall,
                 builder: (context, child) {
@@ -1471,13 +1481,13 @@ class _MatchCelebrationState extends State<MatchCelebration>
                   );
                 },
                 child: Icon(
-                  widget.dog.compatibility >= 95 && i % 3 == 0
+                  _compatibility >= 95 && i % 3 == 0
                       ? Icons.star_rounded
                       : i.isEven
                       ? Icons.favorite_rounded
                       : Icons.pets_rounded,
                   size: i % 3 == 0 ? 23 : 16,
-                  color: widget.dog.compatibility >= 95 && i % 3 == 0
+                  color: _compatibility >= 95 && i % 3 == 0
                       ? const Color(0xFFFFC857)
                       : i.isEven
                       ? TinColors.peach
@@ -1501,15 +1511,15 @@ class _MatchCelebrationState extends State<MatchCelebration>
                       fontWeight: FontWeight.w900,
                       shadows: [
                         Shadow(
-                          color: widget.dog.compatibility >= 95
+                          color: _compatibility >= 95
                               ? const Color(0xFFFFC857)
                               : TinColors.coral,
-                          blurRadius: widget.dog.compatibility >= 95 ? 25 : 12,
+                          blurRadius: _compatibility >= 95 ? 25 : 12,
                         ),
                       ],
                     ),
                   ),
-                  if (widget.dog.compatibility >= 95) ...[
+                  if (_compatibility >= 95) ...[
                     const SizedBox(height: 7),
                     const Text(
                       'QUÍMICA ESTELAR · 5 ESTRELLAS',
@@ -1547,7 +1557,7 @@ class _MatchCelebrationState extends State<MatchCelebration>
                                   shape: BoxShape.circle,
                                   gradient: RadialGradient(
                                     colors: [
-                                      (widget.dog.compatibility >= 95
+                                      (_compatibility >= 95
                                               ? const Color(0xFFFFC857)
                                               : TinColors.coral)
                                           .withValues(alpha: .4),
@@ -1559,7 +1569,7 @@ class _MatchCelebrationState extends State<MatchCelebration>
                                   boxShadow: [
                                     BoxShadow(
                                       color:
-                                          (widget.dog.compatibility >= 95
+                                          (_compatibility >= 95
                                                   ? const Color(0xFFFFC857)
                                                   : TinColors.coral)
                                               .withValues(alpha: .42),

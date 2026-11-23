@@ -201,6 +201,7 @@ class _AuthScreenState extends State<AuthScreen> {
   final _password = TextEditingController();
   bool _loading = false;
   bool _showPassword = false;
+  bool _confirmationPending = false;
   String? _serverError;
   @override
   void dispose() {
@@ -215,21 +216,56 @@ class _AuthScreenState extends State<AuthScreen> {
     if (!_form.currentState!.validate()) return;
     setState(() {
       _loading = true;
+      _confirmationPending = false;
       _serverError = null;
     });
-    final success = widget.register
-        ? await widget.repository.register(
-            _name.text,
-            _email.text,
-            _password.text,
-          )
-        : await widget.repository.login(_email.text, _password.text);
+    bool success;
+    try {
+      if (widget.register) {
+        final result = await widget.repository.register(
+          _name.text,
+          _email.text,
+          _password.text,
+        );
+        if (!mounted) return;
+        if (result == RegistrationResult.alreadyRegistered) {
+          setState(() {
+            _loading = false;
+            _serverError = 'Ese correo ya tiene una cuenta. Vuelve y toca «Ya tengo una cuenta» para iniciar sesión. Para crear otra, usa un correo distinto.';
+          });
+          return;
+        }
+        if (result == RegistrationResult.confirmationRequired) {
+          setState(() {
+            _loading = false;
+            _confirmationPending = true;
+            _serverError =
+                'Cuenta creada. Confirma tu correo y luego inicia sesión.';
+          });
+          return;
+        }
+        success = true;
+      } else {
+        success = await widget.repository.login(_email.text, _password.text);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _serverError = error is StateError
+            ? error.message.toString()
+            : widget.register
+            ? 'No pudimos crear la cuenta. Revisa tu conexión e intenta de nuevo.'
+            : 'No pudimos iniciar sesión. Revisa tu conexión e intenta de nuevo.';
+      });
+      return;
+    }
     if (!mounted) return;
     if (!success) {
       setState(() {
         _loading = false;
         _serverError = widget.register
-            ? 'Ya existe una cuenta con este correo.'
+            ? 'Ese correo ya tiene una cuenta. Vuelve y toca «Ya tengo una cuenta» para iniciar sesión. Para crear otra, usa un correo distinto.'
             : 'Correo o contraseña incorrectos.';
       });
       return;
@@ -291,55 +327,6 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
-                  if (!widget.register) ...[
-                    GlassCard(
-                      padding: const EdgeInsets.all(13),
-                      radius: 18,
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 38,
-                            height: 38,
-                            decoration: BoxDecoration(
-                              color: TinColors.peach,
-                              borderRadius: BorderRadius.circular(13),
-                            ),
-                            child: const Icon(
-                              Icons.lightbulb_outline_rounded,
-                              color: TinColors.coral,
-                              size: 19,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          const Expanded(
-                            child: Text(
-                              'Demo: demo@tindog.mx · Demo1234',
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          PressScale(
-                            onTap: () {
-                              setState(() {
-                                _email.text = 'demo@tindog.mx';
-                                _password.text = 'Demo1234';
-                              });
-                            },
-                            child: const Text(
-                              'Usar',
-                              style: TextStyle(
-                                color: TinColors.coral,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                  ],
                   Form(
                     key: _form,
                     autovalidateMode: AutovalidateMode.onUserInteraction,
@@ -426,8 +413,10 @@ class _AuthScreenState extends State<AuthScreen> {
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
                         _serverError!,
-                        style: const TextStyle(
-                          color: TinColors.coral,
+                        style: TextStyle(
+                          color: _confirmationPending
+                              ? TinColors.green
+                              : TinColors.coral,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
@@ -475,7 +464,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   const SizedBox(height: 24),
                   Center(
                     child: Text(
-                      'Tus datos se guardan de forma local en este dispositivo.',
+                      'Tu cuenta y perfiles se sincronizan con TinDog.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 10,
@@ -941,7 +930,13 @@ class _WelcomeAtmosphereState extends State<_WelcomeAtmosphere>
     );
   }
 
-  Widget _buildParticle(int index, double width, double height, double t, bool dark) {
+  Widget _buildParticle(
+    int index,
+    double width,
+    double height,
+    double t,
+    bool dark,
+  ) {
     final phase = (t * .35 + index * .173) % 1;
     final x = width * (.11 + ((index * 37) % 79) / 100);
     final y = height * (1.08 - phase * 1.2);

@@ -1,12 +1,22 @@
 # TinDog
 
-App Flutter para explorar perros con perfiles de salud y pedigrí, enviar solicitudes de cruza y chatear después de un match. Esta entrega usa datos y persistencia locales; no necesita un servidor.
+Aplicacion Flutter para perfiles de perros, descubrimiento, solicitudes y chat.
 
-## Requisitos
+## Supabase conectado
 
-- Flutter estable y Dart incluidos con Flutter.
-- Android Studio con Android SDK para compilar Android.
-- Un emulador Android o dispositivo conectado para `flutter run`.
+La app usa el proyecto configurado en `lib/main.dart` y las tablas existentes: `dogs`, `breeds`, `dog_photos`, `dog_pedigrees`, `dog_health_status`, `swipes`, `breeding_requests`, `matches`, `conversations`, `messages` y `users`.
+
+El registro de intereses llama a `public.swipe`. Esa funcion decide si el resultado es un like de convivencia, una solicitud de cruza o un match. Para responder una solicitud se llama a `public.respond_breeding_request`.
+
+No ejecutes `supabase/schema.sql` en este proyecto: es solo un esquema de ejemplo para una base nueva y vacia.
+
+## Fotos y cartilla de salud
+
+Los perfiles usan el bucket privado `dog-photos`. La app guarda la ruta del objeto y solicita una URL firmada para mostrar cada foto; no guarda URLs publicas ni enlaces temporales en la base.
+
+La cartilla usa los tipos de vacuna de `health_item_types` y guarda fecha de aplicacion, vencimiento y foto de etiqueta en `dog_health_records`. Los registros nuevos quedan pendientes de revision.
+
+El chat guarda mensajes en `messages` y escucha cambios de Realtime. La base debe tener Realtime habilitado para esa tabla para recibir mensajes nuevos al instante.
 
 ## Ejecutar
 
@@ -15,42 +25,10 @@ flutter pub get
 flutter run
 ```
 
-Credenciales para recorrer la demo:
+## Arquitectura
 
-- Correo: `demo@tindog.mx`
-- Contraseña: `Demo1234`
-
-También puedes crear una cuenta local desde Registro. Las cuentas, perros registrados, deslizados, solicitudes respondidas y mensajes se guardan en el almacenamiento del dispositivo.
-
-## Generar APK
-
-APK de depuración para probar:
-
-```bash
-flutter build apk --debug
-```
-
-APK de release firmado con la clave de depuración del proyecto (para pruebas, no para publicar):
-
-```bash
-flutter build apk
-```
-
-El archivo queda en `build/app/outputs/flutter-apk/app-release.apk`. Para publicar en Play Store, configura una clave de firma propia siguiendo la guía de Flutter.
-
-## Datos y arquitectura
-
-- `assets/json/dogs.json`: perfiles de ejemplo y vacunas.
-- `assets/json/matches.json`: matches de ejemplo.
-- `assets/json/requests.json`: solicitudes de ejemplo.
-- `assets/json/conversations.json`: conversaciones de ejemplo.
-- `assets/dogs/`: 12 fotos de perros incluidas en el paquete; no se descargan al ejecutar la app. Sus fuentes están en `assets/dogs/SOURCES.md`.
-- `assets/fonts/`: Plus Jakarta Sans y Bricolage Grotesque, empaquetadas con sus licencias OFL.
-- `lib/data/repository.dart`: contrato `TinDogRepository` e implementación local `LocalTinDogRepository`. Las pantallas usan el contrato, de modo que el backend futuro puede añadir otro adaptador sin cambiar los widgets.
-- `shared_preferences`: sesión, preferencias del demo, solicitudes, likes y mensajes.
-- `path_provider` e `image_picker`: copia y persistencia local de fotos seleccionadas para perros registrados.
-- `sensors_plus` y `battery_plus`: inclinación por giroscopio y modo de bajo consumo.
-
-## Pantallas
-
-Bienvenida, Login, Registro, Registrar mi perro por pasos, Descubrir, Filtros, Detalle, Matches y Solicitudes, Chat y Perfil. La app incluye tema claro/oscuro, animaciones, efectos de deslizamiento, transición Hero y vibración. Si Android tiene desactivadas las animaciones, se usan transiciones simples y se omiten los efectos con partículas.
+- `lib/data/repository.dart`: contrato de datos y adaptador local para desarrollo.
+- `lib/data/supabase_repository.dart`: adaptador a las tablas y funciones del proyecto Supabase.
+- `lib/main.dart`: inicializa Supabase y conecta el adaptador remoto.
+- `supabase/schema.sql`: esquema opcional para una instalacion nueva; no aplicar a la base existente.
+- `assets/json/`: datos de muestra usados por el adaptador local.

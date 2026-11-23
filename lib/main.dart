@@ -2,17 +2,21 @@ import 'dart:async';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'data/repository.dart';
+import 'data/supabase_repository.dart';
 import 'screens/auth_screens.dart';
 import 'screens/home_shell.dart';
 import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final preferences = await SharedPreferences.getInstance();
-  runApp(TinDogApp(repository: LocalTinDogRepository(preferences)));
+  await Supabase.initialize(
+    url: 'https://wljifybotllpuwoplaak.supabase.co',
+    publishableKey: 'sb_publishable_9m2FJXVfDL6vbNtVO0zCSw_HINHZ6uk',
+  );
+  runApp(TinDogApp(repository: SupabaseTinDogRepository(Supabase.instance.client)));
 }
 
 class TinDogApp extends StatefulWidget {

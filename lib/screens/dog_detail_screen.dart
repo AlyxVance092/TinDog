@@ -22,6 +22,7 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
   final GlobalKey _healthKey = GlobalKey();
   double _offset = 0;
   bool _requested = false;
+  String _requestLabel = 'Enviar solicitud';
   @override
   void initState() {
     super.initState();
@@ -112,7 +113,9 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                             ),
                             const SizedBox(width: 4),
                             Text(
-                              '${dog.location} · ${dog.distanceKm} km de ti',
+                              dog.distanceKm == null
+                                  ? dog.location
+                                  : '${dog.location} Â· ${dog.distanceKm} km de ti',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 12,
@@ -146,7 +149,7 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                   children: [
                     const Expanded(
                       child: Text(
-                        'Un poco sobre mí',
+                        'Un poco sobre mÃ­',
                         style: TextStyle(
                           fontFamily: 'Bricolage Grotesque',
                           fontSize: 21,
@@ -154,7 +157,7 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                         ),
                       ),
                     ),
-                    VerifiedPill(),
+                    if (dog.pedigree) const VerifiedPill(),
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -166,78 +169,83 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                     fontSize: 13.5,
                   ),
                 ),
-                const SizedBox(height: 18),
-                GlassCard(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Compatibilidad',
-                              style: TextStyle(
-                                fontFamily: 'Bricolage Grotesque',
-                                fontSize: 17,
-                                fontWeight: FontWeight.w900,
-                                color: Theme.of(context)
-                                    .textTheme
-                                    .bodyLarge
-                                    ?.color,
+                if (dog.compatibility != null) ...[
+                  const SizedBox(height: 18),
+                  GlassCard(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Compatibilidad',
+                                style: TextStyle(
+                                  fontFamily: 'Bricolage Grotesque',
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w900,
+                                  color: Theme.of(context)
+                                      .textTheme
+                                      .bodyLarge
+                                      ?.color,
+                                ),
                               ),
                             ),
-                          ),
-                          TweenAnimationBuilder<double>(
+                            TweenAnimationBuilder<double>(
+                              tween: Tween(
+                                begin: 0,
+                                end: dog.compatibility!.toDouble(),
+                              ),
+                              duration: Duration(
+                                milliseconds: motionReduced ? 0 : 950,
+                              ),
+                              curve: Curves.easeOutCubic,
+                              builder: (_, value, _) => Text(
+                                '${value.round()}%',
+                                style: const TextStyle(
+                                  color: TinColors.coral,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 11),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(99),
+                          child: TweenAnimationBuilder<double>(
                             tween: Tween(
                               begin: 0,
-                              end: dog.compatibility.toDouble(),
+                              end: dog.compatibility! / 100,
                             ),
                             duration: Duration(
-                              milliseconds: motionReduced ? 0 : 950,
+                              milliseconds: motionReduced ? 0 : 1000,
                             ),
-                            curve: Curves.easeOutCubic,
-                            builder: (_, value, _) => Text(
-                              '${value.round()}%',
-                              style: const TextStyle(
-                                color: TinColors.coral,
-                                fontSize: 20,
-                                fontWeight: FontWeight.w900,
+                            builder: (_, value, _) => LinearProgressIndicator(
+                              minHeight: 9,
+                              value: value,
+                              backgroundColor: TinColors.peach.withValues(
+                                alpha: .55,
                               ),
+                              color: TinColors.coral,
                             ),
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 11),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(99),
-                        child: TweenAnimationBuilder<double>(
-                          tween: Tween(begin: 0, end: dog.compatibility / 100),
-                          duration: Duration(
-                            milliseconds: motionReduced ? 0 : 1000,
-                          ),
-                          builder: (_, value, _) => LinearProgressIndicator(
-                            minHeight: 9,
-                            value: value,
-                            backgroundColor: TinColors.peach.withValues(
-                              alpha: .55,
-                            ),
-                            color: TinColors.coral,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Coinciden en raza, edad y estilo de vida.',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).hintColor,
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Coinciden en raza, edad y estilo de vida.',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: Theme.of(context).hintColor,
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(height: 18),
+                  const SizedBox(height: 18),
+                ],
                 Text(
                   'Salud y vacunas',
                   key: _healthKey,
@@ -280,15 +288,21 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                           children: [
                             Text(
                               dog.pedigree
-                                  ? 'Pedigrí registrado'
-                                  : 'Sin pedigrí',
+                                  ? 'Pedigree verificado'
+                                  : dog.hasPedigree
+                                  ? 'Pedigree pendiente'
+                                  : 'Sin pedigree',
                               style: const TextStyle(
                                 fontWeight: FontWeight.w900,
                               ),
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              dog.pedigree ? dog.pedigreeNumber : 'Este perfil cuenta con vacunas verificadas',
+                              dog.hasPedigree
+                                  ? dog.pedigreeNumber.isEmpty
+                                        ? 'Registro enviado para revision'
+                                        : dog.pedigreeNumber
+                                  : 'No se ha registrado pedigree',
                               style: TextStyle(
                                 fontSize: 11,
                                 color: Theme.of(context).hintColor,
@@ -297,11 +311,16 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                           ],
                         ),
                       ),
-                      if (dog.pedigree)
-                        const Icon(
-                          Icons.check_circle_rounded,
-                          color: TinColors.green,
-                        ),
+                      Icon(
+                        dog.pedigree
+                            ? Icons.check_circle_rounded
+                            : dog.hasPedigree
+                            ? Icons.schedule_rounded
+                            : Icons.info_outline_rounded,
+                        color: dog.pedigree
+                            ? TinColors.green
+                            : Theme.of(context).hintColor,
+                      ),
                     ],
                   ),
                 ),
@@ -348,23 +367,42 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
               Expanded(
                 flex: 2,
                 child: PrimaryButton(
-                  label: _requested ? 'Solicitud enviada' : 'Enviar solicitud',
+                  label: _requested ? _requestLabel : 'Enviar solicitud',
                   icon: _requested
                       ? Icons.check_rounded
                       : Icons.favorite_rounded,
                   onPressed: _requested
                       ? null
                       : () async {
-                          await widget.repository.sendRequest(dog);
+                          String? result;
+                          try {
+                            result = await widget.repository.sendRequest(dog);
+                          } catch (error) {
+                            if (!context.mounted) return;
+                            final message = error is StateError
+                                ? error.message.toString()
+                                : 'No pudimos enviar la solicitud. Intenta de nuevo.';
+                            ScaffoldMessenger.of(context)
+                                .showSnackBar(SnackBar(content: Text(message)));
+                            return;
+                          }
                           if (!context.mounted) return;
-                          setState(() => _requested = true);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Solicitud guardada. ¡Te avisaremos si aceptan!',
-                              ),
-                            ),
-                          );
+                          setState(() {
+                            _requested = true;
+                            _requestLabel = switch (result) {
+                              'request_sent' => 'Solicitud enviada',
+                              'match' => 'Hay match',
+                              _ => 'Interes guardado',
+                            };
+                          });
+                          final message = switch (result) {
+                            'request_sent' => 'Solicitud de cruza enviada.',
+                            'match' => 'Hay match. Abre tus conversaciones.',
+                            'liked' => 'Interes guardado.',
+                            _ => 'Accion registrada.',
+                          };
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(SnackBar(content: Text(message)));
                         },
                 ),
               ),
