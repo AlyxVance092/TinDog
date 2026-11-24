@@ -256,6 +256,17 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 10),
+                if (dog.vaccines.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'No hay vacunas verificadas para mostrar.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context).hintColor,
+                      ),
+                    ),
+                  ),
                 ...dog.vaccines.entries.toList().asMap().entries.map(
                   (entry) => _VaccineRow(
                     index: entry.key,
