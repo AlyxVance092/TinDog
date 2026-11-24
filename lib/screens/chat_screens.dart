@@ -567,12 +567,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (isTyping && !_typingBroadcastActive) {
       _typingBroadcastActive = true;
       unawaited(_sendTypingState(true));
-      _typingHeartbeatTimer = Timer.periodic(
-        const Duration(seconds: 2),
-        (_) {
-          if (_typingBroadcastActive) unawaited(_sendTypingState(true));
-        },
-      );
+      _typingHeartbeatTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+        if (_typingBroadcastActive) unawaited(_sendTypingState(true));
+      });
     }
     _typingStopTimer?.cancel();
     if (isTyping) {

@@ -1159,7 +1159,8 @@ class SupabaseTinDogRepository implements TinDogRepository {
         .from('messages')
         .select()
         .eq('conversation_id', conversationId)
-        .order('sent_at');
+        .order('sent_at', ascending: true)
+        .order('id', ascending: true);
     if (rows.any(
       (row) => row['sender_user_id'] != _userId && row['read_at'] == null,
     )) {
@@ -1674,9 +1675,10 @@ class SupabaseTinDogRepository implements TinDogRepository {
 
   ChatMessage _messageFromRow(Map<String, dynamic> row) {
     final sentAt = _parseDate(row['sent_at']).toLocal();
+    final senderUserId = row['sender_user_id']?.toString().toLowerCase();
     return ChatMessage(
       text: row['body']?.toString() ?? '',
-      mine: row['sender_user_id'] == _userId,
+      mine: senderUserId == _userId.toLowerCase(),
       time:
           '${sentAt.hour.toString().padLeft(2, '0')}:${sentAt.minute.toString().padLeft(2, '0')}',
       read: row['read_at'] != null,
