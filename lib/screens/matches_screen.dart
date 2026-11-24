@@ -526,16 +526,25 @@ class _RequestTileState extends State<_RequestTile>
       await widget.repository.answerRequest(id, accept: true);
       if (!mounted) return;
       HapticFeedback.heavyImpact();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('¡Match confirmado! Ya pueden chatear.')),
+      );
       widget.onChanged();
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No pudimos aceptar la solicitud.')),
-        );
-      }
+    } catch (error) {
+      _showRequestError(error, 'No pudimos aceptar la solicitud.');
     } finally {
       if (mounted) setState(() => _opening = false);
     }
+  }
+
+  void _showRequestError(Object error, String fallback) {
+    if (!mounted) return;
+    final message = error is StateError
+        ? error.message.toString()
+        : '$fallback $error';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override
@@ -611,16 +620,11 @@ class _RequestTileState extends State<_RequestTile>
                                 accept: false,
                               );
                               widget.onChanged();
-                            } catch (_) {
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'No pudimos rechazar la solicitud.',
-                                    ),
-                                  ),
-                                );
-                              }
+                            } catch (error) {
+                              _showRequestError(
+                                error,
+                                'No pudimos rechazar la solicitud.',
+                              );
                             }
                           },
                           style: OutlinedButton.styleFrom(
@@ -659,7 +663,8 @@ class _RequestTileState extends State<_RequestTile>
                   ],
                 ),
             ],
-          ] else if (status == 'accepted')
+          ],
+          if (status == 'accepted')
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
@@ -771,7 +776,13 @@ class _StatusBadge extends StatelessWidget {
         status == 'pending'
             ? 'Pendiente'
             : status == 'declined'
-            ? 'Cerrada'
+            ? 'Rechazada'
+            : status == 'accepted'
+            ? 'Aceptada'
+            : status == 'expired'
+            ? 'Vencida'
+            : status == 'cancelled'
+            ? 'Cancelada'
             : status,
         style: TextStyle(
           color: accepted ? TinColors.green : TinColors.coral,

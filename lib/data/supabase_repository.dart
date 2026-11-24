@@ -854,11 +854,30 @@ class SupabaseTinDogRepository implements TinDogRepository {
 
   @override
   Future<void> answerRequest(String requestId, {required bool accept}) async {
-    final result = await _client.rpc(
-      'respond_breeding_request',
-      params: {'p_request_id': requestId, 'p_accept': accept},
-    );
-    _checkRpcResult(result);
+    try {
+      final result = await _client.rpc(
+        'respond_breeding_request',
+        params: {'p_request_id': requestId, 'p_accept': accept},
+      );
+      _checkRpcResult(result);
+    } on PostgrestException catch (error) {
+      if (error.code == 'PGRST202') {
+        throw StateError(
+          'Falta instalar respond_breeding_request en Supabase. Ejecuta la '
+          'migración 20261124_breeding_request_responses.sql.',
+        );
+      }
+      if (error.code == '42501') {
+        throw StateError(
+          'Supabase no permite responder solicitudes. Revisa el permiso '
+          'EXECUTE de respond_breeding_request para authenticated.',
+        );
+      }
+      throw StateError(
+        'Supabase no pudo responder la solicitud '
+        '(${error.code ?? 'sin código'}): ${error.message}',
+      );
+    }
   }
 
   @override
