@@ -54,6 +54,35 @@ class Dog {
     return Color(int.parse('FF$value', radix: 16));
   }
 
+  Dog withHealthData({
+    required Map<String, String> vaccines,
+    Map<String, String> vaccineAppliedOn = const {},
+    Map<String, String> vaccineProducts = const {},
+    Map<String, String> vaccineLots = const {},
+  }) => Dog(
+    id: id,
+    name: name,
+    breed: breed,
+    age: age,
+    sourceDogId: sourceDogId,
+    intention: intention,
+    birthDate: birthDate,
+    sex: sex,
+    location: location,
+    latitude: latitude,
+    longitude: longitude,
+    distanceKm: distanceKm,
+    compatibility: compatibility,
+    vaccines: vaccines,
+    vaccineAppliedOn: vaccineAppliedOn,
+    vaccineLabelPhotos: vaccineLabelPhotos,
+    vaccineProducts: vaccineProducts,
+    vaccineLots: vaccineLots,
+    photo: photo,
+    about: about,
+    color: color,
+  );
+
   factory Dog.fromJson(Map<String, dynamic> json) => Dog(
     id: json['id'] as String,
     name: json['name'] as String,

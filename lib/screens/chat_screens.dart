@@ -477,7 +477,12 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _messages = messages);
         _toBottom();
       },
-      onError: (_) {},
+      onError: (Object error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No pudimos cargar los mensajes: $error')),
+        );
+      },
     );
   }
 
@@ -502,11 +507,14 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     try {
       await widget.repository.sendMessage(widget.dogId, message);
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
         _controller.text = text;
+        final detail = error is StateError
+            ? error.message.toString()
+            : error.toString();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No pudimos enviar el mensaje.')),
+          SnackBar(content: Text('No pudimos enviar el mensaje: $detail')),
         );
       }
       return;
@@ -515,8 +523,17 @@ class _ChatScreenState extends State<ChatScreen> {
     List<ChatMessage> messages;
     try {
       messages = await widget.repository.messages(widget.dogId);
-    } catch (_) {
-      messages = [..._messages, message];
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Mensaje guardado. Esperando sincronización: $error',
+            ),
+          ),
+        );
+      }
+      return;
     }
     if (!mounted) return;
     setState(() {

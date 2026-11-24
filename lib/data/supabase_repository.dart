@@ -493,7 +493,88 @@ class SupabaseTinDogRepository implements TinDogRepository {
         candidates.putIfAbsent(dog.id, () => dog);
       }
     }
-    return candidates.values.toList();
+    final healthByDogId = await _candidateHealthForDogs(
+      candidates.keys.toList(),
+    );
+    return candidates.values.map((dog) {
+      final health = healthByDogId[dog.id];
+      if (health == null) return dog;
+      return dog.withHealthData(
+        vaccines: health.vaccines,
+        vaccineAppliedOn: health.appliedOn,
+        vaccineProducts: health.products,
+        vaccineLots: health.lots,
+      );
+    }).toList();
+  }
+
+  Future<Map<String, _CandidateHealthData>> _candidateHealthForDogs(
+    List<String> dogIds,
+  ) async {
+    if (dogIds.isEmpty) return {};
+    final dataByDogId = <String, _CandidateHealthData>{};
+    _CandidateHealthData dataFor(String dogId) => dataByDogId.putIfAbsent(
+      dogId,
+      _CandidateHealthData.new,
+    );
+
+    final statusRows = await _optionalRows(
+      () async => await _client
+          .from('dog_health_status')
+          .select('dog_id,kind,name,expires_on,status')
+          .inFilter('dog_id', dogIds),
+    );
+    for (final row in statusRows) {
+      if (row['kind'] != 'vaccine' ||
+          row['name'] == null ||
+          row['expires_on'] == null) {
+        continue;
+      }
+      final dogId = row['dog_id'].toString();
+      final name = row['name'].toString();
+      final expiry = row['expires_on'].toString();
+      final previous = dataFor(dogId).vaccines[name];
+      if (previous == null || expiry.compareTo(previous) > 0) {
+        dataFor(dogId).vaccines[name] = expiry;
+      }
+    }
+
+    final typeRows = await _optionalRows(
+      () async => await _client
+          .from('health_item_types')
+          .select('id,name,kind')
+          .eq('kind', 'vaccine'),
+    );
+    final typeNames = {
+      for (final row in typeRows)
+        row['id'].toString(): row['name'].toString(),
+    };
+    final recordRows = await _optionalRows(
+      () async => await _client
+          .from('dog_health_records')
+          .select(
+            'dog_id,type_id,applied_on,expires_on,product_name,lot_number',
+          )
+          .inFilter('dog_id', dogIds)
+          .eq('verification_status', 'approved')
+          .order('created_at', ascending: false),
+    );
+    for (final row in recordRows) {
+      final name = typeNames[row['type_id'].toString()];
+      if (name == null) continue;
+      final data = dataFor(row['dog_id'].toString());
+      final appliedOn = row['applied_on']?.toString();
+      if (appliedOn != null) data.appliedOn.putIfAbsent(name, () => appliedOn);
+      final expiry = row['expires_on']?.toString();
+      if (expiry != null) data.vaccines.putIfAbsent(name, () => expiry);
+      final product = row['product_name']?.toString().trim();
+      if (product != null && product.isNotEmpty) {
+        data.products.putIfAbsent(name, () => product);
+      }
+      final lot = row['lot_number']?.toString().trim();
+      if (lot != null && lot.isNotEmpty) data.lots.putIfAbsent(name, () => lot);
+    }
+    return dataByDogId;
   }
   Future<Dog> _dogFromCandidate(
     Map<String, dynamic> row, {
@@ -884,13 +965,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
   Future<List<ChatMessage>> messages(String dogId) async {
     final conversation = await _conversationForDog(dogId);
     if (conversation == null) return [];
-    final rows = await _client
-        .from('messages')
-        .select()
-        .eq('conversation_id', conversation['id'])
-        .order('sent_at');
-    await _markRead(conversation['id'].toString());
-    return rows.map((row) => _messageFromRow(row)).toList();
+    return _messagesForConversation(conversation['id'].toString());
   }
 
   @override
@@ -900,20 +975,35 @@ class SupabaseTinDogRepository implements TinDogRepository {
       yield const [];
       return;
     }
-    yield await messages(dogId);
-    yield* _client
-        .from('messages')
-        .stream(primaryKey: ['id'])
-        .eq('conversation_id', conversation['id'])
-        .order('sent_at')
-        .map((rows) {
-          if (rows.any(
-            (row) => row['sender_user_id'] != _userId && row['read_at'] == null,
-          )) {
-            unawaited(_markRead(conversation['id'].toString()));
+    final conversationId = conversation['id'].toString();
+    var latest = await _messagesForConversation(conversationId);
+    yield latest;
+    yield* Stream<int>.periodic(const Duration(seconds: 2))
+        .asyncMap((_) async {
+          try {
+            latest = await _messagesForConversation(conversationId);
+          } catch (error) {
+            debugPrint('TinDog chat: no se pudo actualizar el hilo: $error');
           }
-          return rows.map(_messageFromRow).toList();
-        });
+          return latest;
+        })
+        .distinct(_sameMessageLists);
+  }
+
+  Future<List<ChatMessage>> _messagesForConversation(
+    String conversationId,
+  ) async {
+    final rows = await _client
+        .from('messages')
+        .select()
+        .eq('conversation_id', conversationId)
+        .order('sent_at');
+    if (rows.any(
+      (row) => row['sender_user_id'] != _userId && row['read_at'] == null,
+    )) {
+      await _markRead(conversationId);
+    }
+    return rows.map((row) => _messageFromRow(row)).toList();
   }
 
   @override
@@ -1412,6 +1502,21 @@ class SupabaseTinDogRepository implements TinDogRepository {
     );
   }
 
+  bool _sameMessageLists(List<ChatMessage> previous, List<ChatMessage> next) {
+    if (previous.length != next.length) return false;
+    for (var index = 0; index < previous.length; index++) {
+      final a = previous[index];
+      final b = next[index];
+      if (a.text != b.text ||
+          a.mine != b.mine ||
+          a.time != b.time ||
+          a.read != b.read) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   String? _checkRpcResult(dynamic result) {
     if (result is Map && result['ok'] == false) {
       final error = result['error']?.toString() ?? 'request_failed';
@@ -1484,4 +1589,11 @@ class SupabaseTinDogRepository implements TinDogRepository {
     if (difference.inDays == 1) return 'Ayer';
     return 'Hace ${difference.inDays} días';
   }
+}
+
+class _CandidateHealthData {
+  final vaccines = <String, String>{};
+  final appliedOn = <String, String>{};
+  final products = <String, String>{};
+  final lots = <String, String>{};
 }
