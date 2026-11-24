@@ -29,6 +29,8 @@ class DiscoverScreen extends StatefulWidget {
 class _DiscoverScreenState extends State<DiscoverScreen> {
   late Future<List<Dog>> _future;
   List<Dog> _dogs = [];
+  List<Dog> _myDogs = [];
+  String? _selectedDogId;
   int _index = 0;
   Offset _drag = Offset.zero;
   Offset _tilt = Offset.zero;
@@ -96,7 +98,24 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     }
     final savedDistance = await widget.repository.discoveryDistanceKm();
     if (mounted) setState(() => _distance = savedDistance);
-    final allDogs = await widget.repository.discoverDogs();
+    final myDogs = await widget.repository.myDogs();
+    if (myDogs.isEmpty) {
+      throw StateError('Registra un perro antes de buscar candidatos.');
+    }
+    var selectedDogId = _selectedDogId;
+    if (selectedDogId == null ||
+        !myDogs.any((dog) => dog.id == selectedDogId)) {
+      selectedDogId = myDogs.first.id;
+    }
+    if (mounted) {
+      setState(() {
+        _myDogs = myDogs;
+        _selectedDogId = selectedDogId;
+      });
+    }
+    final allDogs = await widget.repository.discoverDogs(
+      sourceDogId: selectedDogId,
+    );
     final filtered = allDogs
         .where((dog) => _sex == 'Todos' || dog.sex == _sex)
         .toList();
@@ -225,6 +244,79 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     } finally {
       if (mounted && widget.active) _startSensor();
     }
+  }
+
+  Future<void> _chooseSourceDog() async {
+    List<Dog> currentDogs;
+    try {
+      currentDogs = await widget.repository.myDogs();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No pudimos cargar tus perros: $error')),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _myDogs = currentDogs;
+      if (!_myDogs.any((dog) => dog.id == _selectedDogId)) {
+        _selectedDogId = _myDogs.isEmpty ? null : _myDogs.first.id;
+      }
+    });
+    if (_myDogs.length < 2) {
+      if (_myDogs.isEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Primero registra un perfil de perro.')),
+        );
+      }
+      return;
+    }
+    final chosenDog = await showModalBottomSheet<Dog>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(18, 8, 18, 22),
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(4, 0, 4, 12),
+              child: Text(
+                '¿Con cuál perro quieres buscar?',
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900),
+              ),
+            ),
+            ..._myDogs.map(
+              (dog) => ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: TinColors.peach,
+                  child: const Icon(Icons.pets_rounded, color: TinColors.coral),
+                ),
+                title: Text(dog.name),
+                subtitle: Text(dog.breed),
+                trailing: dog.id == _selectedDogId
+                    ? const Icon(
+                        Icons.check_circle_rounded,
+                        color: TinColors.green,
+                      )
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, dog),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (chosenDog == null || chosenDog.id == _selectedDogId || !mounted) return;
+    setState(() {
+      _selectedDogId = chosenDog.id;
+      _index = 0;
+      _drag = Offset.zero;
+      _dogs = [];
+      _future = _loadDogs();
+    });
   }
 
   Future<void> _filters() async {
@@ -364,7 +456,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       } catch (error) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('No se pudo guardar el radio de búsqueda: $error')),
+            SnackBar(
+              content: Text('No se pudo guardar el radio de búsqueda: $error'),
+            ),
           );
         }
         return;
@@ -413,6 +507,55 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               ),
             ],
           ),
+          if (_myDogs.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(18),
+                onTap: _chooseSourceDog,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 11,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: TinColors.coral.withValues(alpha: .08),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: TinColors.coral.withValues(alpha: .16),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.pets_rounded,
+                        size: 14,
+                        color: TinColors.coral,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Buscando con ${_myDogs.firstWhere((dog) => dog.id == _selectedDogId, orElse: () => _myDogs.first).name}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      if (_myDogs.length > 1) ...[
+                        const SizedBox(width: 3),
+                        const Icon(
+                          Icons.expand_more_rounded,
+                          size: 17,
+                          color: TinColors.coral,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 9),
           if (!compact)
             GlassCard(

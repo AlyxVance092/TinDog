@@ -152,6 +152,13 @@ class Dog {
   };
 }
 
+class ChatUpdate {
+  const ChatUpdate({required this.messages, this.otherUserTyping = false});
+
+  final List<ChatMessage> messages;
+  final bool otherUserTyping;
+}
+
 class ChatMessage {
   const ChatMessage({
     required this.text,

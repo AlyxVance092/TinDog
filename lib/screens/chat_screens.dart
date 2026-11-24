@@ -466,28 +466,43 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scroll = ScrollController();
   late Future<List<ChatMessage>> _future;
   List<ChatMessage> _messages = [];
-  StreamSubscription<List<ChatMessage>>? _messageSubscription;
+  bool _otherUserTyping = false;
+  bool _typingBroadcastActive = false;
+  bool _sending = false;
+  Timer? _typingStopTimer;
+  Timer? _typingHeartbeatTimer;
+  StreamSubscription<ChatUpdate>? _messageSubscription;
   @override
   void initState() {
     super.initState();
     _future = widget.repository.messages(widget.dogId);
-    _messageSubscription = widget.repository.watchMessages(widget.dogId).listen(
-      (messages) {
-        if (!mounted) return;
-        setState(() => _messages = messages);
-        _toBottom();
-      },
-      onError: (Object error) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No pudimos cargar los mensajes: $error')),
+    _messageSubscription = widget.repository
+        .watchChat(widget.dogId)
+        .listen(
+          (update) {
+            if (!mounted) return;
+            setState(() {
+              _messages = update.messages;
+              _otherUserTyping = update.otherUserTyping;
+            });
+            _toBottom();
+          },
+          onError: (Object error) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('No pudimos cargar los mensajes: $error')),
+            );
+          },
         );
-      },
-    );
   }
 
   @override
   void dispose() {
+    _typingStopTimer?.cancel();
+    _typingHeartbeatTimer?.cancel();
+    if (_typingBroadcastActive) {
+      unawaited(_sendTypingState(false));
+    }
     _messageSubscription?.cancel();
     _controller.dispose();
     _scroll.dispose();
@@ -496,7 +511,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _send() async {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty || _sending) return;
+    _typingStopTimer?.cancel();
+    _typingHeartbeatTimer?.cancel();
+    _typingBroadcastActive = false;
+    unawaited(_sendTypingState(false));
+    setState(() => _sending = true);
     HapticFeedback.selectionClick();
     _controller.clear();
     final message = ChatMessage(
@@ -509,6 +529,7 @@ class _ChatScreenState extends State<ChatScreen> {
       await widget.repository.sendMessage(widget.dogId, message);
     } catch (error) {
       if (mounted) {
+        setState(() => _sending = false);
         _controller.text = text;
         final detail = error is StateError
             ? error.message.toString()
@@ -520,6 +541,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     if (!mounted) return;
+    setState(() => _sending = false);
     List<ChatMessage> messages;
     try {
       messages = await widget.repository.messages(widget.dogId);
@@ -527,9 +549,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              'Mensaje guardado. Esperando sincronización: $error',
-            ),
+            content: Text('Mensaje guardado. Esperando sincronización: $error'),
           ),
         );
       }
@@ -540,6 +560,40 @@ class _ChatScreenState extends State<ChatScreen> {
       _messages = messages;
     });
     _toBottom();
+  }
+
+  void _onDraftChanged(String value) {
+    final isTyping = value.trim().isNotEmpty;
+    if (isTyping && !_typingBroadcastActive) {
+      _typingBroadcastActive = true;
+      unawaited(_sendTypingState(true));
+      _typingHeartbeatTimer = Timer.periodic(
+        const Duration(seconds: 2),
+        (_) {
+          if (_typingBroadcastActive) unawaited(_sendTypingState(true));
+        },
+      );
+    }
+    _typingStopTimer?.cancel();
+    if (isTyping) {
+      _typingStopTimer = Timer(const Duration(milliseconds: 1400), () {
+        _typingBroadcastActive = false;
+        _typingHeartbeatTimer?.cancel();
+        unawaited(_sendTypingState(false));
+      });
+    } else if (_typingBroadcastActive) {
+      _typingBroadcastActive = false;
+      _typingHeartbeatTimer?.cancel();
+      unawaited(_sendTypingState(false));
+    }
+  }
+
+  Future<void> _sendTypingState(bool isTyping) async {
+    try {
+      await widget.repository.setTyping(widget.dogId, isTyping);
+    } catch (error) {
+      debugPrint('TinDog chat: no se pudo actualizar escritura: $error');
+    }
   }
 
   Future<void> _clearConversation() async {
@@ -634,14 +688,18 @@ class _ChatScreenState extends State<ChatScreen> {
                             fontSize: 15,
                           ),
                         ),
-                        const Row(
+                        Row(
                           children: [
                             Icon(Icons.circle, size: 7, color: TinColors.green),
                             SizedBox(width: 5),
                             Text(
-                              'Match verificado',
+                              _otherUserTyping
+                                  ? 'está escribiendo…'
+                                  : 'Match verificado',
                               style: TextStyle(
-                                color: TinColors.green,
+                                color: _otherUserTyping
+                                    ? TinColors.coral
+                                    : TinColors.green,
                                 fontSize: 10,
                                 fontWeight: FontWeight.w700,
                               ),
@@ -792,6 +850,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         index: entry.key,
                       ),
                     ),
+                    if (_otherUserTyping) const _TypingIndicator(),
                   ],
                 );
               },
@@ -804,6 +863,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 Expanded(
                   child: TextField(
                     controller: _controller,
+                    onChanged: _onDraftChanged,
                     minLines: 1,
                     maxLines: 4,
                     textInputAction: TextInputAction.send,
@@ -841,7 +901,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 const SizedBox(width: 8),
                 PressScale(
-                  onTap: _send,
+                  onTap: _sending ? null : _send,
                   child: Container(
                     width: 49,
                     height: 49,
@@ -860,16 +920,88 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       ],
                     ),
-                    child: const Icon(
-                      Icons.arrow_upward_rounded,
-                      color: Colors.white,
-                    ),
+                    child: _sending
+                        ? const Padding(
+                            padding: EdgeInsets.all(15),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(
+                            Icons.arrow_upward_rounded,
+                            color: Colors.white,
+                          ),
                   ),
                 ),
               ],
             ),
           ),
         ],
+      ),
+    ),
+  );
+}
+
+class _TypingIndicator extends StatefulWidget {
+  const _TypingIndicator();
+
+  @override
+  State<_TypingIndicator> createState() => _TypingIndicatorState();
+}
+
+class _TypingIndicatorState extends State<_TypingIndicator> {
+  Timer? _animationTimer;
+  int _activeDot = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _animationTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (mounted) setState(() => _activeDot = (_activeDot + 1) % 3);
+    });
+  }
+
+  @override
+  void dispose() {
+    _animationTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.centerLeft,
+    child: Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? TinColors.darkCard
+            : Colors.white,
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(17),
+          topRight: Radius.circular(17),
+          bottomRight: Radius.circular(17),
+          bottomLeft: Radius.circular(5),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: List.generate(
+          3,
+          (index) => AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: 7,
+            height: 7,
+            margin: EdgeInsets.only(right: index == 2 ? 0 : 4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: TinColors.coral.withValues(
+                alpha: index == _activeDot ? 1 : .35,
+              ),
+            ),
+          ),
+        ),
       ),
     ),
   );

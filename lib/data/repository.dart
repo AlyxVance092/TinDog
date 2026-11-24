@@ -67,7 +67,7 @@ abstract class TinDogRepository {
   Future<List<String>> availableBreeds();
   Future<int> discoveryDistanceKm();
   Future<void> updateDiscoveryDistanceKm(int distanceKm);
-  Future<List<Dog>> discoverDogs();
+  Future<List<Dog>> discoverDogs({String? sourceDogId});
   Future<void> resetDiscovery();
   Future<Dog?> dogById(String dogId);
   Future<List<Dog>> myDogs();
@@ -86,7 +86,8 @@ abstract class TinDogRepository {
   Future<List<Map<String, dynamic>>> requests();
   Future<void> answerRequest(String dogId, {required bool accept});
   Future<List<ChatMessage>> messages(String dogId);
-  Stream<List<ChatMessage>> watchMessages(String dogId);
+  Stream<ChatUpdate> watchChat(String dogId);
+  Future<void> setTyping(String dogId, bool isTyping);
   Future<void> sendMessage(String dogId, ChatMessage message);
   Future<void> clearConversation(String dogId);
 }
@@ -235,7 +236,7 @@ class LocalTinDogRepository implements TinDogRepository {
   }
 
   @override
-  Future<List<Dog>> discoverDogs() async {
+  Future<List<Dog>> discoverDogs({String? sourceDogId}) async {
     await Future<void>.delayed(_delay);
     final allDogs = await _loadCatalog();
     final seen = _readList('seenDogs').map((e) => e.toString()).toSet();
@@ -468,8 +469,13 @@ class LocalTinDogRepository implements TinDogRepository {
   }
 
   @override
-  Stream<List<ChatMessage>> watchMessages(String dogId) async* {
-    yield await messages(dogId);
+  Stream<ChatUpdate> watchChat(String dogId) async* {
+    yield ChatUpdate(messages: await messages(dogId));
+  }
+
+  @override
+  Future<void> setTyping(String dogId, bool isTyping) async {
+    // The local demo repository has no other connected user to notify.
   }
 
   Future<void> _writeMessages(String dogId, List<ChatMessage> messages) =>

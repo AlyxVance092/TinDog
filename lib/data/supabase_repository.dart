@@ -58,6 +58,9 @@ class SupabaseTinDogRepository implements TinDogRepository {
   SupabaseTinDogRepository(this._client);
 
   final SupabaseClient _client;
+  final Map<String, RealtimeChannel> _chatChannelsByDog = {};
+  final Map<String, bool> _pendingTypingByDog = {};
+  final Map<String, Map<String, dynamic>> _conversationsByDog = {};
   static const _photoBucket = 'dog-photos';
   static const _healthLabelBucket = 'health-labels';
 
@@ -374,18 +377,20 @@ class SupabaseTinDogRepository implements TinDogRepository {
       }
       final missingIds = dogIds.where((id) => !saved.containsKey(id)).toList();
       if (missingIds.isNotEmpty) {
-        await _client.from('dog_preferences').upsert(
-          [
-            for (final id in missingIds)
-              {
-                'dog_id': id,
-                'max_distance_km': 100,
-                'only_pedigree': false,
-              },
-          ],
-          onConflict: 'dog_id',
-          ignoreDuplicates: true,
-        );
+        await _client
+            .from('dog_preferences')
+            .upsert(
+              [
+                for (final id in missingIds)
+                  {
+                    'dog_id': id,
+                    'max_distance_km': 100,
+                    'only_pedigree': false,
+                  },
+              ],
+              onConflict: 'dog_id',
+              ignoreDuplicates: true,
+            );
       }
       final selectedDistance = saved[dogIds.first];
       final distance = saved.containsKey(dogIds.first)
@@ -407,17 +412,10 @@ class SupabaseTinDogRepository implements TinDogRepository {
     final dogIds = await _myDogIds();
     if (dogIds.isEmpty) return;
     final distance = distanceKm.clamp(5, 100).toInt();
-    await _client.from('dog_preferences').upsert(
-      [
-        for (final id in dogIds)
-          {
-            'dog_id': id,
-            'max_distance_km': distance,
-            'only_pedigree': false,
-          },
-      ],
-      onConflict: 'dog_id',
-    );
+    await _client.from('dog_preferences').upsert([
+      for (final id in dogIds)
+        {'dog_id': id, 'max_distance_km': distance, 'only_pedigree': false},
+    ], onConflict: 'dog_id');
   }
 
   Future<List<String>> _myDogIds() async {
@@ -431,16 +429,22 @@ class SupabaseTinDogRepository implements TinDogRepository {
   }
 
   @override
-  Future<List<Dog>> discoverDogs() async {
+  Future<List<Dog>> discoverDogs({String? sourceDogId}) async {
     final ownDogIds = await _myDogIds();
     if (ownDogIds.isEmpty) {
       throw StateError(
         'Primero registra un perfil de perro para ver candidatos.',
       );
     }
+    if (sourceDogId != null && !ownDogIds.contains(sourceDogId)) {
+      throw StateError('El perro seleccionado no pertenece a esta cuenta.');
+    }
 
     final candidates = <String, Dog>{};
-    for (final ownDogId in ownDogIds) {
+    final discoveryDogIds = sourceDogId == null
+        ? ownDogIds
+        : <String>[sourceDogId];
+    for (final ownDogId in discoveryDogIds) {
       dynamic result;
       try {
         result = await _client.rpc(
@@ -513,10 +517,8 @@ class SupabaseTinDogRepository implements TinDogRepository {
   ) async {
     if (dogIds.isEmpty) return {};
     final dataByDogId = <String, _CandidateHealthData>{};
-    _CandidateHealthData dataFor(String dogId) => dataByDogId.putIfAbsent(
-      dogId,
-      _CandidateHealthData.new,
-    );
+    _CandidateHealthData dataFor(String dogId) =>
+        dataByDogId.putIfAbsent(dogId, _CandidateHealthData.new);
 
     final statusRows = await _optionalRows(
       () async => await _client
@@ -546,8 +548,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
           .eq('kind', 'vaccine'),
     );
     final typeNames = {
-      for (final row in typeRows)
-        row['id'].toString(): row['name'].toString(),
+      for (final row in typeRows) row['id'].toString(): row['name'].toString(),
     };
     final recordRows = await _optionalRows(
       () async => await _client
@@ -576,6 +577,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
     }
     return dataByDogId;
   }
+
   Future<Dog> _dogFromCandidate(
     Map<String, dynamic> row, {
     required String sourceDogId,
@@ -767,11 +769,15 @@ class SupabaseTinDogRepository implements TinDogRepository {
     if (myDogs.isEmpty) {
       throw StateError('Primero registra el perfil de tu perro.');
     }
-    final ownDog = await dogById(myDogs.first);
+    final sourceDogId =
+        dog.sourceDogId != null && myDogs.contains(dog.sourceDogId)
+        ? dog.sourceDogId!
+        : myDogs.first;
+    final ownDog = await dogById(sourceDogId);
     final result = await _client.rpc(
       'swipe',
       params: {
-        'p_dog_id': myDogs.first,
+        'p_dog_id': sourceDogId,
         'p_target_dog_id': dog.id,
         'p_action': 'like',
         'p_message': ownDog == null
@@ -969,25 +975,181 @@ class SupabaseTinDogRepository implements TinDogRepository {
   }
 
   @override
-  Stream<List<ChatMessage>> watchMessages(String dogId) async* {
+  Stream<ChatUpdate> watchChat(String dogId) async* {
     final conversation = await _conversationForDog(dogId);
     if (conversation == null) {
-      yield const [];
+      yield const ChatUpdate(messages: []);
       return;
     }
     final conversationId = conversation['id'].toString();
-    var latest = await _messagesForConversation(conversationId);
-    yield latest;
-    yield* Stream<int>.periodic(const Duration(seconds: 2))
-        .asyncMap((_) async {
-          try {
-            latest = await _messagesForConversation(conversationId);
-          } catch (error) {
-            debugPrint('TinDog chat: no se pudo actualizar el hilo: $error');
+    final updates = StreamController<ChatUpdate>();
+    var latestMessages = <ChatMessage>[];
+    var otherUserTyping = false;
+    Timer? otherTypingTimeout;
+    Timer? realtimeFallback;
+
+    Future<void> refreshMessages() async {
+      try {
+        latestMessages = await _messagesForConversation(conversationId);
+        if (!updates.isClosed) {
+          updates.add(
+            ChatUpdate(
+              messages: latestMessages,
+              otherUserTyping: otherUserTyping,
+            ),
+          );
+        }
+      } catch (error, stackTrace) {
+        if (!updates.isClosed) updates.addError(error, stackTrace);
+      }
+    }
+
+    void startRealtimeFallback() {
+      realtimeFallback ??= Timer.periodic(
+        const Duration(seconds: 2),
+        (_) => unawaited(refreshMessages()),
+      );
+    }
+
+    final channel = _client.channel(
+      'tindog:chat:$conversationId',
+      opts: const RealtimeChannelConfig(
+        private: true,
+        ack: true,
+        replicationReady: true,
+      ),
+    );
+    _chatChannelsByDog[dogId] = channel;
+    channel
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'messages',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'conversation_id',
+            value: conversationId,
+          ),
+          callback: (_) => unawaited(refreshMessages()),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'messages',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'conversation_id',
+            value: conversationId,
+          ),
+          callback: (_) => unawaited(refreshMessages()),
+        )
+        .onBroadcast(
+          event: 'message',
+          callback: (_) => unawaited(refreshMessages()),
+        )
+        .onBroadcast(
+          event: 'typing',
+          callback: (payload) {
+            if (payload['user_id']?.toString() == _userId) return;
+            otherUserTyping = payload['typing'] == true;
+            otherTypingTimeout?.cancel();
+            if (otherUserTyping) {
+              otherTypingTimeout = Timer(const Duration(seconds: 5), () {
+                otherUserTyping = false;
+                if (!updates.isClosed) {
+                  updates.add(
+                    ChatUpdate(
+                      messages: latestMessages,
+                      otherUserTyping: false,
+                    ),
+                  );
+                }
+              });
+            }
+            if (!updates.isClosed) {
+              updates.add(
+                ChatUpdate(
+                  messages: latestMessages,
+                  otherUserTyping: otherUserTyping,
+                ),
+              );
+            }
+          },
+        )
+        .onSystemEvents((payload) {
+          if (payload is Map &&
+              payload['extension'] == 'system' &&
+              payload['status'] == 'error' &&
+              !updates.isClosed) {
+            startRealtimeFallback();
+            updates.addError(
+              StateError(
+                'Supabase Realtime no pudo escuchar mensajes. Revisa que '
+                'public.messages esté en la publicación supabase_realtime.',
+              ),
+            );
           }
-          return latest;
         })
-        .distinct(_sameMessageLists);
+        .subscribe((status, error) {
+          if (updates.isClosed) return;
+          if (status == RealtimeSubscribeStatus.subscribed) {
+            realtimeFallback?.cancel();
+            realtimeFallback = null;
+            final pendingTyping = _pendingTypingByDog.remove(dogId);
+            if (pendingTyping != null) {
+              unawaited(_sendTyping(channel, pendingTyping));
+            }
+            unawaited(refreshMessages());
+          } else if (status == RealtimeSubscribeStatus.channelError ||
+              status == RealtimeSubscribeStatus.timedOut ||
+              status == RealtimeSubscribeStatus.closed) {
+            startRealtimeFallback();
+            if (!updates.isClosed) {
+              updates.addError(
+                StateError(
+                  'No se pudo conectar al chat en tiempo real: '
+                  '${error ?? status.name}.',
+                ),
+              );
+            }
+          }
+        });
+
+    unawaited(refreshMessages());
+    try {
+      await for (final update in updates.stream) {
+        yield update;
+      }
+    } finally {
+      otherTypingTimeout?.cancel();
+      realtimeFallback?.cancel();
+      if (identical(_chatChannelsByDog[dogId], channel)) {
+        _chatChannelsByDog.remove(dogId);
+      }
+      _pendingTypingByDog.remove(dogId);
+      await updates.close();
+      await _client.removeChannel(channel);
+    }
+  }
+
+  @override
+  Future<void> setTyping(String dogId, bool isTyping) async {
+    final channel = _chatChannelsByDog[dogId];
+    if (channel == null || !channel.canPush) {
+      _pendingTypingByDog[dogId] = isTyping;
+      return;
+    }
+    await _sendTyping(channel, isTyping);
+  }
+
+  Future<void> _sendTyping(RealtimeChannel channel, bool isTyping) async {
+    final result = await channel.sendBroadcastMessage(
+      event: 'typing',
+      payload: {'user_id': _userId, 'typing': isTyping},
+    );
+    if (result != ChannelResponse.ok) {
+      throw StateError('Supabase no recibió el indicador de escritura.');
+    }
   }
 
   Future<List<ChatMessage>> _messagesForConversation(
@@ -1017,6 +1179,22 @@ class SupabaseTinDogRepository implements TinDogRepository {
       'sender_user_id': _userId,
       'body': message.text,
     });
+    final channel = _chatChannelsByDog[dogId];
+    if (channel != null && channel.canPush) {
+      try {
+        final response = await channel
+            .sendBroadcastMessage(
+              event: 'message',
+              payload: {'sender_user_id': _userId},
+            )
+            .timeout(const Duration(seconds: 2));
+        if (response != ChannelResponse.ok) {
+          debugPrint('TinDog chat: no se recibió el ACK de Realtime.');
+        }
+      } catch (error) {
+        debugPrint('TinDog chat: no se pudo emitir el aviso realtime: $error');
+      }
+    }
   }
 
   @override
@@ -1035,6 +1213,8 @@ class SupabaseTinDogRepository implements TinDogRepository {
   }
 
   Future<Map<String, dynamic>?> _conversationForDog(String dogId) async {
+    final cached = _conversationsByDog[dogId];
+    if (cached != null) return cached;
     final ownIds = (await _myDogIds()).toSet();
     if (ownIds.isEmpty) return null;
     final matches = await _client
@@ -1052,7 +1232,11 @@ class SupabaseTinDogRepository implements TinDogRepository {
           .select('id,match_id')
           .eq('match_id', match['id'])
           .limit(1);
-      if (rows.isNotEmpty) return Map<String, dynamic>.from(rows.first);
+      if (rows.isNotEmpty) {
+        final conversation = Map<String, dynamic>.from(rows.first);
+        _conversationsByDog[dogId] = conversation;
+        return conversation;
+      }
     }
     return null;
   }
@@ -1149,31 +1333,27 @@ class SupabaseTinDogRepository implements TinDogRepository {
       if (name == null) continue;
       final appliedOn = record['applied_on']?.toString();
       if (appliedOn != null) {
-        appliedDates.putIfAbsent(dogId, () => {}).putIfAbsent(
-          name,
-          () => appliedOn,
-        );
+        appliedDates
+            .putIfAbsent(dogId, () => {})
+            .putIfAbsent(name, () => appliedOn);
       }
       final productName = record['product_name']?.toString().trim();
       if (productName != null && productName.isNotEmpty) {
-        vaccineProducts.putIfAbsent(dogId, () => {}).putIfAbsent(
-          name,
-          () => productName,
-        );
+        vaccineProducts
+            .putIfAbsent(dogId, () => {})
+            .putIfAbsent(name, () => productName);
       }
       final lotNumber = record['lot_number']?.toString().trim();
       if (lotNumber != null && lotNumber.isNotEmpty) {
-        vaccineLots.putIfAbsent(dogId, () => {}).putIfAbsent(
-          name,
-          () => lotNumber,
-        );
+        vaccineLots
+            .putIfAbsent(dogId, () => {})
+            .putIfAbsent(name, () => lotNumber);
       }
       final expiresOn = record['expires_on']?.toString();
       if (expiresOn != null) {
-        recordExpirations.putIfAbsent(dogId, () => {}).putIfAbsent(
-          name,
-          () => expiresOn,
-        );
+        recordExpirations
+            .putIfAbsent(dogId, () => {})
+            .putIfAbsent(name, () => expiresOn);
       }
       final labelPath = record['label_photo_url']?.toString();
       if (labelPath != null) {
@@ -1182,10 +1362,9 @@ class SupabaseTinDogRepository implements TinDogRepository {
           labelPath,
         );
         if (resolved != null) {
-          healthLabels.putIfAbsent(dogId, () => {}).putIfAbsent(
-            name,
-            () => resolved,
-          );
+          healthLabels
+              .putIfAbsent(dogId, () => {})
+              .putIfAbsent(name, () => resolved);
         }
       }
     }
@@ -1321,7 +1500,8 @@ class SupabaseTinDogRepository implements TinDogRepository {
     };
     for (final name in vaccineNames) {
       final normalizedName = name.trim().toLowerCase();
-      final typeId = typeIds[normalizedName] ??
+      final typeId =
+          typeIds[normalizedName] ??
           (normalizedName == 'parvovirus / moquillo'
               ? typeIds['parvovirus']
               : null);
@@ -1364,7 +1544,8 @@ class SupabaseTinDogRepository implements TinDogRepository {
         return value?.isEmpty == true ? null : value;
       }
 
-      final sameSavedData = currentRecord != null &&
+      final sameSavedData =
+          currentRecord != null &&
           currentRecord['applied_on']?.toString() == appliedOn &&
           currentRecord['expires_on']?.toString() == expiresOn &&
           savedText('product_name') ==
@@ -1500,21 +1681,6 @@ class SupabaseTinDogRepository implements TinDogRepository {
           '${sentAt.hour.toString().padLeft(2, '0')}:${sentAt.minute.toString().padLeft(2, '0')}',
       read: row['read_at'] != null,
     );
-  }
-
-  bool _sameMessageLists(List<ChatMessage> previous, List<ChatMessage> next) {
-    if (previous.length != next.length) return false;
-    for (var index = 0; index < previous.length; index++) {
-      final a = previous[index];
-      final b = next[index];
-      if (a.text != b.text ||
-          a.mine != b.mine ||
-          a.time != b.time ||
-          a.read != b.read) {
-        return false;
-      }
-    }
-    return true;
   }
 
   String? _checkRpcResult(dynamic result) {
