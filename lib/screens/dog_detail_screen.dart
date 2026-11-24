@@ -261,6 +261,9 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                     index: entry.key,
                     name: entry.value.key,
                     date: entry.value.value,
+                    appliedOn: dog.vaccineAppliedOn[entry.value.key],
+                    product: dog.vaccineProducts[entry.value.key],
+                    lot: dog.vaccineLots[entry.value.key],
                   ),
                 ),
               ],
@@ -358,10 +361,16 @@ class _VaccineRow extends StatelessWidget {
     required this.index,
     required this.name,
     required this.date,
+    this.appliedOn,
+    this.product,
+    this.lot,
   });
   final int index;
   final String name;
   final String date;
+  final String? appliedOn;
+  final String? product;
+  final String? lot;
   @override
   Widget build(BuildContext context) => StaggeredIn(
     index: index,
@@ -404,6 +413,30 @@ class _VaccineRow extends StatelessWidget {
                       color: Theme.of(context).hintColor,
                     ),
                   ),
+                  if (appliedOn?.isNotEmpty == true)
+                    Text(
+                      'Aplicada: $appliedOn',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context).hintColor,
+                      ),
+                    ),
+                  if (product?.isNotEmpty == true)
+                    Text(
+                      'Producto: $product',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context).hintColor,
+                      ),
+                    ),
+                  if (lot?.isNotEmpty == true)
+                    Text(
+                      'Lote: $lot',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context).hintColor,
+                      ),
+                    ),
                 ],
               ),
             ),

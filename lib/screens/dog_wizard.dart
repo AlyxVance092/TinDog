@@ -43,6 +43,14 @@ class _DogWizardState extends State<DogWizard> {
     'Rabia': null,
     'Parvovirus / Moquillo': null,
   };
+  final Map<String, TextEditingController> _vaccineProducts = {
+    'Rabia': TextEditingController(),
+    'Parvovirus / Moquillo': TextEditingController(),
+  };
+  final Map<String, TextEditingController> _vaccineLots = {
+    'Rabia': TextEditingController(),
+    'Parvovirus / Moquillo': TextEditingController(),
+  };
   String? _photo;
   String? _error;
   bool _saving = false;
@@ -76,9 +84,14 @@ class _DogWizardState extends State<DogWizard> {
         dog.vaccines[name] ?? dog.vaccines[legacyName] ?? '',
       );
       _vaccineAppliedOn[name] = DateTime.tryParse(
-        dog.vaccineAppliedOn[name] ?? '',
+        dog.vaccineAppliedOn[name] ?? dog.vaccineAppliedOn[legacyName] ?? '',
       );
-      _vaccineLabelPhotos[name] = dog.vaccineLabelPhotos[name];
+      _vaccineLabelPhotos[name] =
+          dog.vaccineLabelPhotos[name] ?? dog.vaccineLabelPhotos[legacyName];
+      _vaccineProducts[name]?.text =
+          dog.vaccineProducts[name] ?? dog.vaccineProducts[legacyName] ?? '';
+      _vaccineLots[name]?.text =
+          dog.vaccineLots[name] ?? dog.vaccineLots[legacyName] ?? '';
     }
     _loadCurrentLocation();
   }
@@ -87,6 +100,12 @@ class _DogWizardState extends State<DogWizard> {
   void dispose() {
     _name.dispose();
     _location.dispose();
+    for (final controller in _vaccineProducts.values) {
+      controller.dispose();
+    }
+    for (final controller in _vaccineLots.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -200,10 +219,10 @@ class _DogWizardState extends State<DogWizard> {
       final hasAnyData =
           _vaccineAppliedOn[name] != null ||
           _vaccines[name] != null ||
-          _vaccineLabelPhotos[name] != null;
-      return !hasAnyData ||
-          (_vaccineAppliedOn[name] != null &&
-              _vaccineLabelPhotos[name] != null);
+          _vaccineLabelPhotos[name] != null ||
+          _vaccineProducts[name]!.text.trim().isNotEmpty ||
+          _vaccineLots[name]!.text.trim().isNotEmpty;
+      return !hasAnyData || _vaccineAppliedOn[name] != null;
     });
   }
 
@@ -344,7 +363,7 @@ class _DogWizardState extends State<DogWizard> {
               ? widget.repository.canStoreHealthLabels
                     ? 'Para cruza captura fecha, vigencia y foto de etiqueta de las dos vacunas.'
                     : 'Las vacunas deben estar vigentes para registrar una cruza.'
-              : 'Completa la fecha de aplicaci\u00f3n y agrega una foto de la etiqueta de cada vacuna.',
+              : 'Para guardar una vacuna, selecciona su fecha de aplicación. La foto de la etiqueta es opcional para convivencia.',
         );
         return;
       }
@@ -399,6 +418,16 @@ class _DogWizardState extends State<DogWizard> {
                     entry.value!.startsWith('http')
                 ? entry.value!
                 : 'picked:${entry.value}',
+      },
+      vaccineProducts: {
+        for (final entry in _vaccineProducts.entries)
+          if (entry.value.text.trim().isNotEmpty)
+            entry.key: entry.value.text.trim(),
+      },
+      vaccineLots: {
+        for (final entry in _vaccineLots.entries)
+          if (entry.value.text.trim().isNotEmpty)
+            entry.key: entry.value.text.trim(),
       },
       photo: _photo != null ? 'picked:$_photo' : existing?.photo ?? '',
       about: existing?.about ?? 'Perfil registrado por su familia en TinDog.',
@@ -828,6 +857,24 @@ class _DogWizardState extends State<DogWizard> {
           children: [
             Text(name, style: const TextStyle(fontWeight: FontWeight.w900)),
             const SizedBox(height: 8),
+            TextField(
+              controller: _vaccineProducts[name],
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Nombre del producto o vacuna',
+                prefixIcon: Icon(Icons.medication_outlined),
+              ),
+            ),
+            const SizedBox(height: 7),
+            TextField(
+              controller: _vaccineLots[name],
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                labelText: 'Número de lote',
+                prefixIcon: Icon(Icons.tag_rounded),
+              ),
+            ),
+            const SizedBox(height: 7),
             _DateButton(
               label: 'Fecha de aplicaci\u00f3n',
               value: _vaccineAppliedOn[name] == null

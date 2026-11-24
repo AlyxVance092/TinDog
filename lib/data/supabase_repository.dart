@@ -356,18 +356,32 @@ class SupabaseTinDogRepository implements TinDogRepository {
     try {
       final rows = await _client
           .from('dog_preferences')
-          .select('dog_id,max_distance_km')
+          .select('dog_id,max_distance_km,only_pedigree')
           .inFilter('dog_id', dogIds);
       final saved = {
         for (final row in rows)
           row['dog_id'].toString(): (row['max_distance_km'] as num?)?.toInt(),
       };
+      final stalePedigreeFilterIds = rows
+          .where((row) => row['only_pedigree'] == true)
+          .map((row) => row['dog_id'].toString())
+          .toList();
+      if (stalePedigreeFilterIds.isNotEmpty) {
+        await _client
+            .from('dog_preferences')
+            .update({'only_pedigree': false})
+            .inFilter('dog_id', stalePedigreeFilterIds);
+      }
       final missingIds = dogIds.where((id) => !saved.containsKey(id)).toList();
       if (missingIds.isNotEmpty) {
         await _client.from('dog_preferences').upsert(
           [
             for (final id in missingIds)
-              {'dog_id': id, 'max_distance_km': 100},
+              {
+                'dog_id': id,
+                'max_distance_km': 100,
+                'only_pedigree': false,
+              },
           ],
           onConflict: 'dog_id',
           ignoreDuplicates: true,
@@ -382,7 +396,9 @@ class SupabaseTinDogRepository implements TinDogRepository {
       debugPrint(
         'TinDog: no se pudo leer la distancia preferida (${error.code}): ${error.message}',
       );
-      return 25;
+      throw StateError(
+        'No se pudieron actualizar las preferencias de búsqueda (${error.code}): ${error.message}',
+      );
     }
   }
 
@@ -394,7 +410,11 @@ class SupabaseTinDogRepository implements TinDogRepository {
     await _client.from('dog_preferences').upsert(
       [
         for (final id in dogIds)
-          {'dog_id': id, 'max_distance_km': distance},
+          {
+            'dog_id': id,
+            'max_distance_km': distance,
+            'only_pedigree': false,
+          },
       ],
       onConflict: 'dog_id',
     );
@@ -1004,25 +1024,47 @@ class SupabaseTinDogRepository implements TinDogRepository {
       () async => await _client
           .from('dog_health_records')
           .select(
-            'dog_id,type_id,applied_on,expires_on,label_photo_url,verification_status',
+            'dog_id,type_id,applied_on,expires_on,product_name,lot_number,label_photo_url,verification_status',
           )
-          .inFilter('dog_id', ids),
+          .inFilter('dog_id', ids)
+          .order('created_at', ascending: false),
     );
     final appliedDates = <String, Map<String, String>>{};
     final healthLabels = <String, Map<String, String>>{};
+    final vaccineProducts = <String, Map<String, String>>{};
+    final vaccineLots = <String, Map<String, String>>{};
+    final recordExpirations = <String, Map<String, String>>{};
     for (final record in healthRecordRows) {
       final dogId = record['dog_id'].toString();
       final name = healthTypeNames[record['type_id'].toString()];
       if (name == null) continue;
       final appliedOn = record['applied_on']?.toString();
       if (appliedOn != null) {
-        appliedDates.putIfAbsent(dogId, () => {})[name] = appliedOn;
+        appliedDates.putIfAbsent(dogId, () => {}).putIfAbsent(
+          name,
+          () => appliedOn,
+        );
+      }
+      final productName = record['product_name']?.toString().trim();
+      if (productName != null && productName.isNotEmpty) {
+        vaccineProducts.putIfAbsent(dogId, () => {}).putIfAbsent(
+          name,
+          () => productName,
+        );
+      }
+      final lotNumber = record['lot_number']?.toString().trim();
+      if (lotNumber != null && lotNumber.isNotEmpty) {
+        vaccineLots.putIfAbsent(dogId, () => {}).putIfAbsent(
+          name,
+          () => lotNumber,
+        );
       }
       final expiresOn = record['expires_on']?.toString();
       if (expiresOn != null) {
-        vaccines
-            .putIfAbsent(dogId, () => {})
-            .putIfAbsent(name, () => expiresOn);
+        recordExpirations.putIfAbsent(dogId, () => {}).putIfAbsent(
+          name,
+          () => expiresOn,
+        );
       }
       final labelPath = record['label_photo_url']?.toString();
       if (labelPath != null) {
@@ -1031,9 +1073,15 @@ class SupabaseTinDogRepository implements TinDogRepository {
           labelPath,
         );
         if (resolved != null) {
-          healthLabels.putIfAbsent(dogId, () => {})[name] = resolved;
+          healthLabels.putIfAbsent(dogId, () => {}).putIfAbsent(
+            name,
+            () => resolved,
+          );
         }
       }
+    }
+    for (final entry in recordExpirations.entries) {
+      vaccines.putIfAbsent(entry.key, () => {}).addAll(entry.value);
     }
     final userRows = await _optionalRows(
       () async => await _client
@@ -1081,6 +1129,8 @@ class SupabaseTinDogRepository implements TinDogRepository {
         vaccines: health,
         vaccineAppliedOn: appliedDates[id] ?? const {},
         vaccineLabelPhotos: healthLabels[id] ?? const {},
+        vaccineProducts: vaccineProducts[id] ?? const {},
+        vaccineLots: vaccineLots[id] ?? const {},
         photo: photoList.isEmpty ? '' : photoList.first,
         about: row['bio']?.toString() ?? '',
         color: '#FFDCCB',
@@ -1143,10 +1193,14 @@ class SupabaseTinDogRepository implements TinDogRepository {
   }
 
   Future<void> _saveHealthRecords(String dogId, Dog dog, String userId) async {
-    final records = dog.vaccineLabelPhotos.entries
-        .where((entry) => entry.value.startsWith('picked:'))
-        .toList();
-    if (records.isEmpty) return;
+    final vaccineNames = <String>{
+      ...dog.vaccines.keys,
+      ...dog.vaccineAppliedOn.keys,
+      ...dog.vaccineLabelPhotos.keys,
+      ...dog.vaccineProducts.keys,
+      ...dog.vaccineLots.keys,
+    };
+    if (vaccineNames.isEmpty) return;
 
     final types = await _client
         .from('health_item_types')
@@ -1156,58 +1210,120 @@ class SupabaseTinDogRepository implements TinDogRepository {
       for (final row in types)
         row['name'].toString().trim().toLowerCase(): row['id'],
     };
-    for (final record in records) {
-      final typeId = typeIds[record.key.trim().toLowerCase()];
-      final appliedOn = dog.vaccineAppliedOn[record.key];
-      final expiresOn = dog.vaccines[record.key];
-      if (typeId == null || appliedOn == null) {
-        throw StateError('Faltan datos de salud para ${record.key}.');
+    for (final name in vaccineNames) {
+      final normalizedName = name.trim().toLowerCase();
+      final typeId = typeIds[normalizedName] ??
+          (normalizedName == 'parvovirus / moquillo'
+              ? typeIds['parvovirus']
+              : null);
+      if (typeId == null) {
+        throw StateError(
+          'La vacuna "$name" no existe en public.health_item_types. '
+          'Revisa el catálogo de vacunas en Supabase.',
+        );
       }
+      final appliedOn = dog.vaccineAppliedOn[name];
+      final expiresOn = dog.vaccines[name];
+      final productName = dog.vaccineProducts[name]?.trim();
+      final lotNumber = dog.vaccineLots[name]?.trim();
+      final photoValue = dog.vaccineLabelPhotos[name];
+      final hasAnyData =
+          appliedOn != null ||
+          expiresOn != null ||
+          (productName?.isNotEmpty ?? false) ||
+          (lotNumber?.isNotEmpty ?? false) ||
+          (photoValue?.isNotEmpty ?? false);
+      if (!hasAnyData) continue;
+      if (appliedOn == null) {
+        throw StateError('Selecciona la fecha de aplicación de $name.');
+      }
+
       final existing = await _client
           .from('dog_health_records')
-          .select('id,verification_status')
+          .select(
+            'id,verification_status,label_photo_url,applied_on,expires_on,product_name,lot_number',
+          )
           .eq('dog_id', dogId)
           .eq('type_id', typeId)
+          .order('created_at', ascending: false)
           .limit(1);
-      if (existing.isNotEmpty &&
-          existing.first['verification_status'] == 'approved') {
+      final currentRecord = existing.isEmpty ? null : existing.first;
+      final isApproved = currentRecord?['verification_status'] == 'approved';
+      final photoChanged = photoValue?.startsWith('picked:') == true;
+      String? savedText(String column) {
+        final value = currentRecord?[column]?.toString().trim();
+        return value?.isEmpty == true ? null : value;
+      }
+
+      final sameSavedData = currentRecord != null &&
+          currentRecord['applied_on']?.toString() == appliedOn &&
+          currentRecord['expires_on']?.toString() == expiresOn &&
+          savedText('product_name') ==
+              (productName?.isEmpty == true ? null : productName) &&
+          savedText('lot_number') ==
+              (lotNumber?.isEmpty == true ? null : lotNumber);
+      if (sameSavedData && !photoChanged) continue;
+      if (isApproved && dog.intention == 'breeding' && !photoChanged) {
         throw StateError(
-          'El registro aprobado de ${record.key} no se puede reemplazar desde la app.',
+          'El registro aprobado de $name no se modifica. Para registrar una '
+          'nueva dosis de cruza, selecciona una foto nueva de su etiqueta.',
         );
       }
 
-      final localPath = record.value.substring('picked:'.length);
-      final file = File(localPath);
-      final fileName = file.uri.pathSegments.isEmpty
-          ? 'label.jpg'
-          : file.uri.pathSegments.last;
-      final extension = fileName.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
-      final path =
-          '$userId/$dogId/${typeId}_${DateTime.now().microsecondsSinceEpoch}.$extension';
-      await _client.storage
-          .from(_healthLabelBucket)
-          .uploadBinary(
-            path,
-            await file.readAsBytes(),
-            fileOptions: FileOptions(
-              cacheControl: '3600',
-              contentType: extension == 'png' ? 'image/png' : 'image/jpeg',
-              upsert: false,
-            ),
-          );
-      if (existing.isNotEmpty) {
-        await _client
+      String? labelPath = isApproved
+          ? null
+          : currentRecord?['label_photo_url']?.toString();
+      if (photoValue != null && photoValue.startsWith('picked:')) {
+        final localPath = photoValue.substring('picked:'.length);
+        final file = File(localPath);
+        final fileName = file.uri.pathSegments.isEmpty
+            ? 'label.jpg'
+            : file.uri.pathSegments.last;
+        final extension = fileName.toLowerCase().endsWith('.png')
+            ? 'png'
+            : 'jpg';
+        final uploadedPath =
+            '$userId/$dogId/${typeId}_${DateTime.now().microsecondsSinceEpoch}.$extension';
+        labelPath = uploadedPath;
+        await _client.storage
+            .from(_healthLabelBucket)
+            .uploadBinary(
+              uploadedPath,
+              await file.readAsBytes(),
+              fileOptions: FileOptions(
+                cacheControl: '3600',
+                contentType: extension == 'png' ? 'image/png' : 'image/jpeg',
+                upsert: false,
+              ),
+            );
+      } else if (!isApproved &&
+          photoValue != null &&
+          photoValue.trim().isNotEmpty &&
+          (labelPath == null || labelPath.isEmpty)) {
+        labelPath = photoValue.trim();
+      }
+
+      if (currentRecord != null && !isApproved) {
+        final deleted = await _client
             .from('dog_health_records')
             .delete()
-            .eq('dog_id', dogId)
-            .eq('type_id', typeId);
+            .eq('id', currentRecord['id'])
+            .select('id');
+        if (deleted.isEmpty) {
+          throw StateError(
+            'Supabase no permitió actualizar la vacuna $name. Revisa la '
+            'política DELETE de dog_health_records para registros pendientes.',
+          );
+        }
       }
       await _client.from('dog_health_records').insert({
         'dog_id': dogId,
         'type_id': typeId,
         'applied_on': appliedOn,
         'expires_on': expiresOn,
-        'label_photo_url': path,
+        'product_name': productName?.isEmpty == true ? null : productName,
+        'lot_number': lotNumber?.isEmpty == true ? null : lotNumber,
+        'label_photo_url': labelPath,
         'verification_status': 'pending',
       });
     }

@@ -18,6 +18,8 @@ class Dog {
     required this.vaccines,
     this.vaccineAppliedOn = const {},
     this.vaccineLabelPhotos = const {},
+    this.vaccineProducts = const {},
+    this.vaccineLots = const {},
     required this.photo,
     required this.about,
     required this.color,
@@ -41,6 +43,8 @@ class Dog {
   final Map<String, String> vaccines;
   final Map<String, String> vaccineAppliedOn;
   final Map<String, String> vaccineLabelPhotos;
+  final Map<String, String> vaccineProducts;
+  final Map<String, String> vaccineLots;
   final String photo;
   final String about;
   final String color;
@@ -79,6 +83,16 @@ class Dog {
         (key, value) => MapEntry(key.toString(), value.toString()),
       ),
     ),
+    vaccineProducts: Map<String, String>.from(
+      (json['vaccineProducts'] as Map? ?? const {}).map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      ),
+    ),
+    vaccineLots: Map<String, String>.from(
+      (json['vaccineLots'] as Map? ?? const {}).map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      ),
+    ),
     photo: json['photo'] as String,
     about: json['about'] as String? ?? '',
     color: json['color'] as String? ?? '#FFDCCB',
@@ -101,6 +115,8 @@ class Dog {
     'vaccines': vaccines,
     'vaccineAppliedOn': vaccineAppliedOn,
     'vaccineLabelPhotos': vaccineLabelPhotos,
+    'vaccineProducts': vaccineProducts,
+    'vaccineLots': vaccineLots,
     'photo': photo,
     'about': about,
     'color': color,

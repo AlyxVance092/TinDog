@@ -98,11 +98,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     if (mounted) setState(() => _distance = savedDistance);
     final allDogs = await widget.repository.discoverDogs();
     final filtered = allDogs
-        .where(
-          (dog) =>
-              (dog.distanceKm == null || dog.distanceKm! <= _distance) &&
-              (_sex == 'Todos' || dog.sex == _sex),
-        )
+        .where((dog) => _sex == 'Todos' || dog.sex == _sex)
         .toList();
     if (mounted) setState(() => _dogs = filtered);
     return allDogs;
@@ -481,7 +477,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   return _empty(
                     widget.repository.canReplayDiscovery
                         ? '¡Ya viste a toda la manada!'
-                                        : 'No hay perros compatibles en el radio seleccionado. Revisa la ubicación, la visibilidad del perfil y que ambos perros tengan una intención compatible. Si ya se deslizaron antes, esos perfiles no vuelven a aparecer.',
+                        : 'Supabase devolvió 0 candidatos. Se excluyen perfiles fuera del radio, ocultos, con intención incompatible o ya deslizados. Revisa esos filtros y busca de nuevo.',
                     Icons.pets_rounded,
                     widget.repository.canReplayDiscovery
                         ? _replayManada
