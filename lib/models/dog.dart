@@ -6,15 +6,15 @@ class Dog {
     required this.name,
     required this.breed,
     required this.age,
+    this.sourceDogId,
     this.intention = 'playdate',
     this.birthDate,
     required this.sex,
     required this.location,
+    this.latitude,
+    this.longitude,
     this.distanceKm,
     this.compatibility,
-    required this.pedigree,
-    this.hasPedigree = false,
-    required this.pedigreeNumber,
     required this.vaccines,
     this.vaccineAppliedOn = const {},
     this.vaccineLabelPhotos = const {},
@@ -27,15 +27,17 @@ class Dog {
   final String name;
   final String breed;
   final int age;
+
+  /// The owner's dog used to fetch this candidate from Supabase.
+  final String? sourceDogId;
   final String intention;
   final DateTime? birthDate;
   final String sex;
   final String location;
+  final double? latitude;
+  final double? longitude;
   final int? distanceKm;
   final int? compatibility;
-  final bool pedigree;
-  final bool hasPedigree;
-  final String pedigreeNumber;
   final Map<String, String> vaccines;
   final Map<String, String> vaccineAppliedOn;
   final Map<String, String> vaccineLabelPhotos;
@@ -53,16 +55,15 @@ class Dog {
     name: json['name'] as String,
     breed: json['breed'] as String,
     age: json['age'] as int,
+    sourceDogId: json['sourceDogId'] as String?,
     intention: json['intention'] as String? ?? 'playdate',
     birthDate: DateTime.tryParse(json['birthDate'] as String? ?? ''),
     sex: json['sex'] as String,
     location: json['location'] as String,
+    latitude: (json['latitude'] as num?)?.toDouble(),
+    longitude: (json['longitude'] as num?)?.toDouble(),
     distanceKm: json['distanceKm'] as int?,
     compatibility: json['compatibility'] as int?,
-    pedigree: json['pedigree'] as bool? ?? false,
-    hasPedigree:
-        json['hasPedigree'] as bool? ?? (json['pedigree'] as bool? ?? false),
-    pedigreeNumber: json['pedigreeNumber'] as String? ?? '',
     vaccines: Map<String, String>.from(
       (json['vaccines'] as Map? ?? const {}).map(
         (key, value) => MapEntry(key.toString(), value.toString()),
@@ -88,15 +89,15 @@ class Dog {
     'name': name,
     'breed': breed,
     'age': age,
+    'sourceDogId': sourceDogId,
     'intention': intention,
     'birthDate': birthDate?.toIso8601String(),
     'sex': sex,
     'location': location,
+    'latitude': latitude,
+    'longitude': longitude,
     'distanceKm': distanceKm,
     'compatibility': compatibility,
-    'pedigree': pedigree,
-    'hasPedigree': hasPedigree,
-    'pedigreeNumber': pedigreeNumber,
     'vaccines': vaccines,
     'vaccineAppliedOn': vaccineAppliedOn,
     'vaccineLabelPhotos': vaccineLabelPhotos,

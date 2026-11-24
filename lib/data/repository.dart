@@ -2,12 +2,49 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/dog.dart';
 
 enum RegistrationResult { signedIn, confirmationRequired, alreadyRegistered }
+
+class AccountLocation {
+  const AccountLocation({this.city, this.latitude, this.longitude});
+
+  final String? city;
+  final double? latitude;
+  final double? longitude;
+
+  bool get hasCoordinates => latitude != null && longitude != null;
+}
+
+Future<AccountLocation?> captureDeviceCoordinates() async {
+  try {
+    if (!await Geolocator.isLocationServiceEnabled()) return null;
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      return null;
+    }
+    final position = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        timeLimit: Duration(seconds: 20),
+      ),
+    );
+    return AccountLocation(
+      latitude: position.latitude,
+      longitude: position.longitude,
+    );
+  } catch (_) {
+    return null;
+  }
+}
 
 abstract class TinDogRepository {
   String? get displayName;
@@ -24,7 +61,12 @@ abstract class TinDogRepository {
     String email,
     String password,
   );
+  Future<AccountLocation> currentLocation();
+  Future<bool> refreshDeviceLocation();
   Future<void> logout();
+  Future<List<String>> availableBreeds();
+  Future<int> discoveryDistanceKm();
+  Future<void> updateDiscoveryDistanceKm(int distanceKm);
   Future<List<Dog>> discoverDogs();
   Future<void> resetDiscovery();
   Future<Dog?> dogById(String dogId);
@@ -34,6 +76,7 @@ abstract class TinDogRepository {
   Future<void> deleteDog(String dogId);
   Future<String?> swipe(
     String dogId, {
+    String? sourceDogId,
     required bool liked,
     bool superLike = false,
   });
@@ -146,7 +189,50 @@ class LocalTinDogRepository implements TinDogRepository {
   }
 
   @override
+  Future<AccountLocation> currentLocation() async => AccountLocation(
+    city: _preferences.getString('currentCity'),
+    latitude: _preferences.getDouble('currentLatitude'),
+    longitude: _preferences.getDouble('currentLongitude'),
+  );
+
+  @override
+  Future<bool> refreshDeviceLocation() async {
+    final location = await captureDeviceCoordinates();
+    if (location == null || !location.hasCoordinates) return false;
+    await _preferences.setDouble('currentLatitude', location.latitude!);
+    await _preferences.setDouble('currentLongitude', location.longitude!);
+    return true;
+  }
+
+  @override
   Future<void> logout() => _preferences.remove('sessionEmail');
+
+  @override
+  Future<List<String>> availableBreeds() async {
+    final dogs = await _loadCatalog();
+    final names = dogs
+        .map((dog) => dog.breed.trim())
+        .where((name) => name.isNotEmpty && name != 'Raza no especificada')
+        .toSet()
+        .toList();
+    if (!names.any((name) => name.toLowerCase() == 'mestizo')) {
+      names.add('Mestizo');
+    }
+    names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return names;
+  }
+
+  @override
+  Future<int> discoveryDistanceKm() async =>
+      _preferences.getInt('discoveryDistanceKm') ?? 100;
+
+  @override
+  Future<void> updateDiscoveryDistanceKm(int distanceKm) async {
+    await _preferences.setInt(
+      'discoveryDistanceKm',
+      distanceKm.clamp(5, 100).toInt(),
+    );
+  }
 
   @override
   Future<List<Dog>> discoverDogs() async {
@@ -206,6 +292,13 @@ class LocalTinDogRepository implements TinDogRepository {
 
   @override
   Future<void> addDog(Dog dog) async {
+    if (dog.location.trim().isNotEmpty) {
+      await _preferences.setString('currentCity', dog.location.trim());
+    }
+    if (dog.latitude != null && dog.longitude != null) {
+      await _preferences.setDouble('currentLatitude', dog.latitude!);
+      await _preferences.setDouble('currentLongitude', dog.longitude!);
+    }
     final stored = await _storeDogPhoto(dog);
     final dogs = await myDogs();
     dogs.add(stored);
@@ -214,6 +307,13 @@ class LocalTinDogRepository implements TinDogRepository {
 
   @override
   Future<void> updateDog(Dog dog) async {
+    if (dog.location.trim().isNotEmpty) {
+      await _preferences.setString('currentCity', dog.location.trim());
+    }
+    if (dog.latitude != null && dog.longitude != null) {
+      await _preferences.setDouble('currentLatitude', dog.latitude!);
+      await _preferences.setDouble('currentLongitude', dog.longitude!);
+    }
     final stored = await _storeDogPhoto(dog);
     final dogs = await myDogs();
     final index = dogs.indexWhere((item) => item.id == dog.id);
@@ -243,6 +343,7 @@ class LocalTinDogRepository implements TinDogRepository {
   @override
   Future<String?> swipe(
     String dogId, {
+    String? sourceDogId,
     required bool liked,
     bool superLike = false,
   }) async {

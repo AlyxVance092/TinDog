@@ -28,6 +28,42 @@ class _HomeShellState extends State<HomeShell> {
   int _selected = 0;
   bool _chatOpen = false;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _refreshLocationAfterSignIn();
+    });
+  }
+
+  Future<void> _refreshLocationAfterSignIn() async {
+    if (!widget.repository.supportsDistanceFilter) return;
+    try {
+      final updated = await widget.repository.refreshDeviceLocation();
+      if (!mounted) return;
+      if (updated) {
+        _showLocationMessage('Ubicación guardada en Supabase: users.location.');
+        return;
+      }
+      _showLocationMessage(
+        'No se actualizó tu ubicación. Activa la ubicación precisa del celular '
+        'y revisa que exista public.user_locations en Supabase.',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      final message = error is StateError
+          ? error.message.toString()
+          : 'No pudimos guardar tu ubicación en Supabase.';
+      _showLocationMessage(message);
+    }
+  }
+
+  void _showLocationMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 7)),
+    );
+  }
+
   Future<void> _openChat(String dogId, String name) async {
     if (_chatOpen) return;
     setState(() => _chatOpen = true);

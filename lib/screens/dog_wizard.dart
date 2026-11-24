@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../data/repository.dart';
 import '../models/dog.dart';
@@ -18,14 +19,18 @@ class DogWizard extends StatefulWidget {
 
 class _DogWizardState extends State<DogWizard> {
   final _name = TextEditingController();
-  final _breed = TextEditingController();
-  final _pedigreeNumber = TextEditingController();
+  final _location = TextEditingController();
   final _picker = ImagePicker();
+  late Future<List<String>> _breedOptions;
+  String? _selectedBreed;
+  double? _latitude;
+  double? _longitude;
+  double? _locationAccuracy;
+  bool _loadingLocation = false;
   int _step = 0;
   String? _sex;
   String _intention = 'playdate';
   DateTime? _birthDate;
-  bool _hasPedigree = false;
   final Map<String, DateTime?> _vaccines = {
     'Rabia': null,
     'Parvovirus / Moquillo': null,
@@ -47,10 +52,17 @@ class _DogWizardState extends State<DogWizard> {
   @override
   void initState() {
     super.initState();
+    _breedOptions = widget.repository.availableBreeds();
     final dog = widget.dog;
-    if (dog == null) return;
+    if (dog == null) {
+      _loadCurrentLocation();
+      return;
+    }
     _name.text = dog.name;
-    _breed.text = dog.breed;
+    _selectedBreed = dog.breed.split(' / ').first.trim();
+    _location.text = dog.location;
+    _latitude = dog.latitude;
+    _longitude = dog.longitude;
     _sex = dog.sex;
     _intention = dog.intention;
     final today = DateTime.now();
@@ -58,8 +70,6 @@ class _DogWizardState extends State<DogWizard> {
     _birthDate =
         dog.birthDate ??
         DateTime(today.year, today.month - estimatedMonths, today.day);
-    _hasPedigree = dog.hasPedigree;
-    _pedigreeNumber.text = dog.pedigreeNumber;
     for (final name in _vaccines.keys) {
       final legacyName = name == 'Parvovirus / Moquillo' ? 'Parvovirus' : name;
       _vaccines[name] = DateTime.tryParse(
@@ -70,14 +80,97 @@ class _DogWizardState extends State<DogWizard> {
       );
       _vaccineLabelPhotos[name] = dog.vaccineLabelPhotos[name];
     }
+    _loadCurrentLocation();
   }
 
   @override
   void dispose() {
     _name.dispose();
-    _breed.dispose();
-    _pedigreeNumber.dispose();
+    _location.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadCurrentLocation() async {
+    try {
+      final location = await widget.repository.currentLocation();
+      if (!mounted) return;
+      setState(() {
+        if (_location.text.trim().isEmpty && location.city != null) {
+          _location.text = location.city!.trim();
+        }
+        _latitude ??= location.latitude;
+        _longitude ??= location.longitude;
+      });
+    } catch (_) {
+      // The user can enter the city manually if it has not been saved yet.
+    }
+  }
+
+  Future<void> _useCurrentLocation() async {
+    setState(() {
+      _loadingLocation = true;
+      _error = null;
+    });
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        throw const _LocationMessage(
+          'Activa la ubicación del celular e inténtalo de nuevo.',
+        );
+      }
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.deniedForever) {
+        throw const _LocationMessage(
+          'El permiso de ubicación está bloqueado. Actívalo en Ajustes de la app.',
+          openSettings: true,
+        );
+      }
+      if (permission == LocationPermission.denied) {
+        throw const _LocationMessage(
+          'Permite la ubicación para capturar las coordenadas.',
+        );
+      }
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 20),
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _latitude = position.latitude;
+        _longitude = position.longitude;
+        _locationAccuracy = position.accuracy;
+      });
+    } on _LocationMessage catch (message) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message.message),
+            action: message.openSettings
+                ? SnackBarAction(
+                    label: 'Ajustes',
+                    onPressed: Geolocator.openAppSettings,
+                  )
+                : null,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No pudimos obtener el GPS. Revisa el permiso y vuelve a intentarlo.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingLocation = false);
+    }
   }
 
   int? get _monthsOld {
@@ -157,7 +250,7 @@ class _DogWizardState extends State<DogWizard> {
       initialDate: _vaccineAppliedOn[name] ?? today,
       firstDate: DateTime(2000),
       lastDate: today,
-      helpText: 'Fecha de aplicacion: $name',
+      helpText: 'Fecha de aplicaci\u00f3n: $name',
     );
     if (picked != null) {
       setState(() {
@@ -227,10 +320,14 @@ class _DogWizardState extends State<DogWizard> {
     setState(() => _error = null);
     if (_step == 0) {
       if (_name.text.trim().isEmpty ||
-          _breed.text.trim().isEmpty ||
+          (_selectedBreed ?? '').trim().isEmpty ||
+          (_location.text.trim().isEmpty &&
+              (_latitude == null || _longitude == null)) ||
           _sex == null ||
           _birthDate == null) {
-        setState(() => _error = 'Completa los campos obligatorios.');
+        setState(
+          () => _error = 'Completa nombre, raza, sexo y fecha de nacimiento; escribe una ciudad o usa el botón para capturar el GPS.',
+        );
         return;
       }
       if ((_monthsOld ?? 0) < 18) {
@@ -241,17 +338,13 @@ class _DogWizardState extends State<DogWizard> {
         return;
       }
     } else if (_step == 1) {
-      if (_hasPedigree && _pedigreeNumber.text.trim().isEmpty) {
-        setState(() => _error = 'Agrega el número de pedigrí.');
-        return;
-      }
       if (widget.repository.canEditHealthRecords && !_healthRecordsComplete) {
         setState(
           () => _error = _intention == 'breeding'
               ? widget.repository.canStoreHealthLabels
                     ? 'Para cruza captura fecha, vigencia y foto de etiqueta de las dos vacunas.'
                     : 'Las vacunas deben estar vigentes para registrar una cruza.'
-              : 'Completa fecha de aplicacion y foto de etiqueta en cada vacuna que agregues.',
+              : 'Completa la fecha de aplicaci\u00f3n y agrega una foto de la etiqueta de cada vacuna.',
         );
         return;
       }
@@ -274,23 +367,20 @@ class _DogWizardState extends State<DogWizard> {
     final dog = Dog(
       id: existing?.id ?? 'mine_${DateTime.now().millisecondsSinceEpoch}',
       name: _name.text.trim(),
-      breed: _breed.text.trim(),
+      breed: _selectedBreed!.trim(),
       age: ((_monthsOld ?? 18) / 12).floor(),
       intention: _intention,
       birthDate: _birthDate,
       sex: _sex!,
-      location: existing?.location ?? 'Ciudad de México',
+      location: _location.text.trim(),
+      latitude: _latitude,
+      longitude: _longitude,
       distanceKm:
           existing?.distanceKm ??
           (widget.repository.canEditHealthRecords ? 1 : null),
       compatibility:
           existing?.compatibility ??
           (widget.repository.canEditHealthRecords ? 100 : null),
-      pedigree: widget.repository.canEditHealthRecords
-          ? _hasPedigree
-          : existing?.pedigree ?? false,
-      hasPedigree: _hasPedigree,
-      pedigreeNumber: _hasPedigree ? _pedigreeNumber.text.trim() : '',
       vaccines: {
         for (final entry in _vaccines.entries)
           if (entry.value != null)
@@ -332,7 +422,7 @@ class _DogWizardState extends State<DogWizard> {
       if (mounted) {
         setState(() {
           _saving = false;
-          _error = 'No se pudo guardar el perfil. Revisa tu conexión e intenta de nuevo.';
+          _error = 'No se pudo guardar el perfil: $error';
         });
       }
     }
@@ -408,9 +498,7 @@ class _DogWizardState extends State<DogWizard> {
               child: _step == 0
                   ? _identityStep()
                   : _step == 1
-                  ? widget.repository.canEditHealthRecords
-                        ? _healthStep()
-                        : _pedigreeStep()
+                  ? _healthStep()
                   : _photoStep(),
             ),
           ),
@@ -478,15 +566,54 @@ class _DogWizardState extends State<DogWizard> {
         ),
       ),
       const SizedBox(height: 12),
+      _breedSelector(),
+      const SizedBox(height: 12),
       TextField(
-        controller: _breed,
+        controller: _location,
         textCapitalization: TextCapitalization.words,
-        decoration: const InputDecoration(
-          labelText: 'Raza',
-          hintText: 'Ej. Golden Retriever',
-          prefixIcon: Icon(Icons.search_rounded),
+        decoration: InputDecoration(
+          labelText: 'Ubicación (ciudad)',
+          hintText: 'Ej. Guadalajara, Jalisco',
+          helperText: 'Se guarda como ciudad de tu cuenta. El botón recupera la ciudad guardada.',
+          prefixIcon: const Icon(Icons.location_on_outlined),
+          suffixIcon: IconButton(
+            tooltip: 'Recuperar ciudad guardada en tu cuenta',
+            onPressed: _loadCurrentLocation,
+            icon: const Icon(Icons.restore_rounded),
+          ),
         ),
       ),
+      const SizedBox(height: 9),
+      SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: _loadingLocation ? null : _useCurrentLocation,
+          icon: _loadingLocation
+              ? const SizedBox(
+                  width: 17,
+                  height: 17,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.my_location_rounded),
+          label: Text(
+            _loadingLocation
+                ? 'Obteniendo ubicación del celular…'
+                : 'Usar ubicación actual del celular',
+          ),
+        ),
+      ),
+      if (_latitude != null && _longitude != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            'GPS listo: ${_latitude!.toStringAsFixed(5)}, ${_longitude!.toStringAsFixed(5)}${_locationAccuracy == null ? '' : ' · precisión ~${_locationAccuracy!.round()} m'}. Se guarda privado; otros perfiles solo reciben la distancia aproximada.',
+            style: TextStyle(
+              color: Theme.of(context).hintColor,
+              fontSize: 11,
+              height: 1.35,
+            ),
+          ),
+        ),
       const SizedBox(height: 17),
       const Text(
         'Sexo',
@@ -539,7 +666,7 @@ class _DogWizardState extends State<DogWizard> {
         ),
       const SizedBox(height: 11),
       const Text(
-        'Tipo de conexiÃ³n',
+        'Tipo de conexión',
         style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
       ),
       const SizedBox(height: 7),
@@ -584,60 +711,75 @@ class _DogWizardState extends State<DogWizard> {
     ],
   );
 
-  Widget _pedigreeStep() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        'Registro de pedigree',
-        style: TextStyle(
-          fontFamily: 'Bricolage Grotesque',
-          fontSize: 25,
-          fontWeight: FontWeight.w900,
-          color: Theme.of(context).textTheme.bodyLarge?.color,
-        ),
-      ),
-      const SizedBox(height: 16),
-      GlassCard(
-        radius: 19,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-        child: SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          value: _hasPedigree,
-          activeThumbColor: TinColors.green,
-          title: const Text(
-            'Tiene pedigree',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+  Widget _breedSelector() => FutureBuilder<List<String>>(
+    future: _breedOptions,
+    builder: (context, snapshot) {
+      if (snapshot.connectionState != ConnectionState.done &&
+          !snapshot.hasData) {
+        return const InputDecorator(
+          decoration: InputDecoration(
+            labelText: 'Raza',
+            prefixIcon: Icon(Icons.search_rounded),
           ),
-          subtitle: const Text(
-            'El numero se enviara para verificacion.',
-            style: TextStyle(fontSize: 10),
-          ),
-          onChanged: (value) => setState(() => _hasPedigree = value),
-        ),
-      ),
-      if (_hasPedigree) ...[
-        const SizedBox(height: 12),
-        TextField(
-          controller: _pedigreeNumber,
+          child: Text('Cargando razas de la base de datos…'),
+        );
+      }
+      if (snapshot.hasError) {
+        return InputDecorator(
           decoration: const InputDecoration(
-            labelText: 'Numero de registro',
-            prefixIcon: Icon(Icons.badge_outlined),
+            labelText: 'Raza',
+            prefixIcon: Icon(Icons.search_rounded),
           ),
+          child: Row(
+            children: [
+              const Expanded(child: Text('No se pudo cargar el catálogo.')),
+              TextButton(
+                onPressed: () => setState(
+                  () => _breedOptions = widget.repository.availableBreeds(),
+                ),
+                child: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        );
+      }
+
+      final breeds = List<String>.from(snapshot.data ?? const []);
+      final selectedBreed = breeds.contains(_selectedBreed)
+          ? _selectedBreed
+          : null;
+      return DropdownButtonFormField<String>(
+        key: ValueKey(breeds.join('|')),
+        initialValue: selectedBreed,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Raza',
+          prefixIcon: Icon(Icons.search_rounded),
         ),
-      ],
-      const SizedBox(height: 18),
-      Text(
-        'La cartilla de salud se muestra desde la base de datos. En este momento no se puede editar desde la app.',
-        style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12),
-      ),
-    ],
+        hint: const Text('Selecciona una raza'),
+        items: breeds
+            .map(
+              (breed) => DropdownMenuItem<String>(
+                value: breed,
+                child: Text(breed, overflow: TextOverflow.ellipsis),
+              ),
+            )
+            .toList(),
+        validator: (value) => (value ?? '').trim().isEmpty
+            ? 'Selecciona una raza del catálogo.'
+            : null,
+        onChanged: (breed) {
+          setState(() => _selectedBreed = breed);
+        },
+      );
+    },
   );
 
   Widget _healthStep() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Text(
-        'Salud y pedigrí',
+        'Salud y vacunas',
         style: TextStyle(
           fontFamily: 'Bricolage Grotesque',
           fontSize: 25,
@@ -651,35 +793,6 @@ class _DogWizardState extends State<DogWizard> {
         style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12),
       ),
       const SizedBox(height: 17),
-      GlassCard(
-        radius: 19,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-        child: SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          value: _hasPedigree,
-          activeThumbColor: TinColors.green,
-          title: const Text(
-            'Tiene pedigrí',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
-          ),
-          subtitle: const Text(
-            'Registro genealógico oficial',
-            style: TextStyle(fontSize: 10),
-          ),
-          onChanged: (value) => setState(() => _hasPedigree = value),
-        ),
-      ),
-      if (_hasPedigree) ...[
-        const SizedBox(height: 11),
-        TextField(
-          controller: _pedigreeNumber,
-          decoration: const InputDecoration(
-            labelText: 'Número de pedigrí',
-            prefixIcon: Icon(Icons.badge_outlined),
-          ),
-        ),
-      ],
-      const SizedBox(height: 19),
       const Text(
         'Cartilla de salud',
         style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
@@ -716,7 +829,7 @@ class _DogWizardState extends State<DogWizard> {
             Text(name, style: const TextStyle(fontWeight: FontWeight.w900)),
             const SizedBox(height: 8),
             _DateButton(
-              label: 'Fecha de aplicacion',
+              label: 'Fecha de aplicaci\u00f3n',
               value: _vaccineAppliedOn[name] == null
                   ? 'Seleccionar fecha'
                   : _formatDate(_vaccineAppliedOn[name]!),
@@ -881,6 +994,13 @@ class _DogWizardState extends State<DogWizard> {
       ),
     ],
   );
+}
+
+class _LocationMessage implements Exception {
+  const _LocationMessage(this.message, {this.openSettings = false});
+
+  final String message;
+  final bool openSettings;
 }
 
 class _DateButton extends StatelessWidget {

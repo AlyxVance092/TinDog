@@ -115,7 +115,7 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                             Text(
                               dog.distanceKm == null
                                   ? dog.location
-                                  : '${dog.location} Â· ${dog.distanceKm} km de ti',
+                                  : '${dog.location} · ${dog.distanceKm} km de ti',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 12,
@@ -149,7 +149,7 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                   children: [
                     const Expanded(
                       child: Text(
-                        'Un poco sobre mÃ­',
+                        'Un poco sobre mí',
                         style: TextStyle(
                           fontFamily: 'Bricolage Grotesque',
                           fontSize: 21,
@@ -157,7 +157,6 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                         ),
                       ),
                     ),
-                    if (dog.pedigree) const VerifiedPill(),
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -262,66 +261,6 @@ class _DogDetailScreenState extends State<DogDetailScreen> {
                     index: entry.key,
                     name: entry.value.key,
                     date: entry.value.value,
-                  ),
-                ),
-                const SizedBox(height: 15),
-                GlassCard(
-                  padding: const EdgeInsets.all(15),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: TinColors.green.withValues(alpha: .13),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: const Icon(
-                          Icons.workspace_premium_rounded,
-                          color: TinColors.green,
-                        ),
-                      ),
-                      const SizedBox(width: 11),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              dog.pedigree
-                                  ? 'Pedigree verificado'
-                                  : dog.hasPedigree
-                                  ? 'Pedigree pendiente'
-                                  : 'Sin pedigree',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              dog.hasPedigree
-                                  ? dog.pedigreeNumber.isEmpty
-                                        ? 'Registro enviado para revision'
-                                        : dog.pedigreeNumber
-                                  : 'No se ha registrado pedigree',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Theme.of(context).hintColor,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Icon(
-                        dog.pedigree
-                            ? Icons.check_circle_rounded
-                            : dog.hasPedigree
-                            ? Icons.schedule_rounded
-                            : Icons.info_outline_rounded,
-                        color: dog.pedigree
-                            ? TinColors.green
-                            : Theme.of(context).hintColor,
-                      ),
-                    ],
                   ),
                 ),
               ],

@@ -96,10 +96,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (confirmed != true) return;
     try {
       await widget.repository.deleteDog(dog.id);
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No pudimos actualizar ese perfil.')),
+          SnackBar(content: Text('No pudimos eliminar ese perfil: $error')),
         );
       }
       return;
@@ -338,6 +338,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 if (snapshot.connectionState != ConnectionState.done) {
                   return const SkeletonCard(height: 100, radius: 20);
                 }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: PressScale(
+                      onTap: _refreshCountsAndDogs,
+                      child: GlassCard(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.error_outline_rounded,
+                              size: 31,
+                              color: TinColors.coral,
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'No pudimos cargar tus perfiles. Toca para reintentar.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(fontWeight: FontWeight.w900),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${snapshot.error}',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }
                 final dogs = snapshot.data ?? [];
                 if (dogs.isEmpty) {
                   return Center(
@@ -360,7 +395,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Agrega sus vacunas y pedigrí para encontrar conexiones verificadas.',
+                              'Agrega las vacunas de tu perro para compartir su información de salud.',
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 10.5,

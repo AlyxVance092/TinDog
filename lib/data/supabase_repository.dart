@@ -2,10 +2,57 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/dog.dart';
 import 'repository.dart';
+
+String _registrationPasswordError(AuthException error) {
+  if (error is AuthWeakPasswordException && error.reasons.isNotEmpty) {
+    final requirements = error.reasons
+        .map(_passwordReasonInSpanish)
+        .toSet()
+        .join(' y ');
+    return 'Supabase pide que la contraseña $requirements.';
+  }
+
+  final message = error.message.trim();
+  if (message.isNotEmpty && message.toLowerCase() != 'weak password') {
+    return 'Supabase rechazó la contraseña: $message';
+  }
+  return 'Supabase rechazó la contraseña. Revisa los requisitos de contraseña de Authentication en el proyecto.';
+}
+
+String _passwordReasonInSpanish(String reason) {
+  final normalized = reason.toLowerCase();
+  if (normalized == 'too_short' ||
+      normalized == 'length' ||
+      normalized.contains('at least') ||
+      normalized.contains('shorter')) {
+    final minLength = RegExp(r'\d+').firstMatch(reason)?.group(0);
+    return minLength == null
+        ? 'tenga más caracteres'
+        : 'tenga al menos $minLength caracteres';
+  }
+  if (normalized.contains('uppercase')) return 'incluya una mayúscula';
+  if (normalized.contains('lowercase')) return 'incluya una minúscula';
+  if (normalized.contains('number') || normalized.contains('digit')) {
+    return 'incluya un número';
+  }
+  if (normalized.contains('symbol') || normalized.contains('special')) {
+    return 'incluya un símbolo';
+  }
+  if (normalized == 'characters') {
+    return 'cumpla los tipos de caracteres requeridos (por ejemplo, símbolos)';
+  }
+  if (normalized.contains('leaked') ||
+      normalized.contains('compromised') ||
+      normalized.contains('pwned')) {
+    return 'no aparezca en una lista de contraseñas filtradas; prueba otra';
+  }
+  return reason;
+}
 
 class SupabaseTinDogRepository implements TinDogRepository {
   SupabaseTinDogRepository(this._client);
@@ -34,11 +81,11 @@ class SupabaseTinDogRepository implements TinDogRepository {
   bool get canStoreHealthLabels => true;
 
   @override
-  bool get supportsDistanceFilter => false;
+  bool get supportsDistanceFilter => true;
 
   String get _userId {
     final id = _client.auth.currentUser?.id;
-    if (id == null) throw StateError('Inicia sesiÃ³n para continuar.');
+    if (id == null) throw StateError('Inicia sesión para continuar.');
     return id;
   }
 
@@ -99,7 +146,13 @@ class SupabaseTinDogRepository implements TinDogRepository {
         password: password,
         data: {'display_name': name.trim()},
       );
-      final identities = response.user?.identities;
+      final user = response.user;
+      if (user == null) {
+        throw StateError(
+          'Supabase no devolvió la cuenta. Vuelve a intentar y comparte el mensaje si falla.',
+        );
+      }
+      final identities = user.identities;
       if (response.session == null &&
           identities != null &&
           identities.isEmpty) {
@@ -111,65 +164,381 @@ class SupabaseTinDogRepository implements TinDogRepository {
       return RegistrationResult.signedIn;
     } on AuthException catch (error) {
       final message = error.message.toLowerCase();
-      if (message.contains('already registered') ||
+      final code = error.code?.toLowerCase() ?? '';
+      if (code == 'email_exists' ||
+          code == 'user_already_exists' ||
+          message.contains('already registered') ||
           message.contains('already been registered') ||
           message.contains('user exists')) {
         return RegistrationResult.alreadyRegistered;
       }
-      if (message.contains('rate limit') ||
+      if (error.statusCode == '429' ||
+          code == 'over_email_send_rate_limit' ||
+          code == 'over_request_rate_limit' ||
+          message.contains('rate limit') ||
           message.contains('too many requests')) {
         throw StateError(
-          'Supabase limito los correos de registro. Espera un momento o inicia sesion con una cuenta existente.',
+          'Supabase limitó temporalmente los registros por correo. Espera unos minutos antes de volver a intentar.',
         );
       }
-      if (message.contains('signup is disabled') ||
+      if (code == 'signup_disabled' ||
+          message.contains('signup is disabled') ||
           message.contains('signups not allowed')) {
         throw StateError(
-          'El registro de cuentas esta desactivado en Supabase.',
+          'El registro de cuentas está desactivado en Supabase. Activa Allow new users to sign up en Authentication.',
         );
       }
-      rethrow;
+      if (code == 'weak_password' || error is AuthWeakPasswordException) {
+        throw StateError(_registrationPasswordError(error));
+      }
+      if (message.contains('database error saving new user')) {
+        throw StateError(
+          'Auth recibió el registro, pero falló al guardar el perfil. Pídele a tu compañero revisar el trigger de auth.users que crea la fila en public.users.',
+        );
+      }
+      if (error.statusCode == null) {
+        throw StateError(
+          'No pudimos conectar con Supabase. Revisa internet e intenta de nuevo.',
+        );
+      }
+      throw StateError(
+        'Supabase rechazó el registro (código: ${error.code ?? error.statusCode}).',
+      );
+    }
+  }
+
+  @override
+  Future<AccountLocation> currentLocation() async {
+    String? city;
+    double? latitude;
+    double? longitude;
+    try {
+      final rows = await _client
+          .from('users')
+          .select('city')
+          .eq('id', _userId)
+          .limit(1);
+      city = rows.isEmpty ? null : rows.first['city']?.toString();
+    } on PostgrestException {
+      // City is optional if this Supabase schema does not include that field.
+    }
+    try {
+      final rows = await _client
+          .from('user_locations')
+          .select('latitude,longitude')
+          .eq('user_id', _userId)
+          .limit(1);
+      if (rows.isNotEmpty) {
+        latitude = (rows.first['latitude'] as num?)?.toDouble();
+        longitude = (rows.first['longitude'] as num?)?.toDouble();
+      }
+    } on PostgrestException {
+      // GPS is enabled after the one-time location migration is applied.
+    }
+    return AccountLocation(
+      city: city,
+      latitude: latitude,
+      longitude: longitude,
+    );
+  }
+
+  @override
+  Future<bool> refreshDeviceLocation() async {
+    final location = await captureDeviceCoordinates();
+    if (location == null || !location.hasCoordinates) {
+      debugPrint(
+        'TinDog GPS: no se obtuvieron coordenadas del dispositivo; revisa '
+        'servicios de ubicación y permisos.',
+      );
+      return false;
+    }
+    await _saveCurrentLocation(
+      '',
+      latitude: location.latitude,
+      longitude: location.longitude,
+    );
+    return true;
+  }
+
+  Future<void> _saveCurrentLocation(
+    String city, {
+    double? latitude,
+    double? longitude,
+  }) async {
+    final userUpdates = <String, dynamic>{};
+    if (city.trim().isNotEmpty) userUpdates['city'] = city.trim();
+    if (latitude != null && longitude != null) {
+      // PostGIS geography accepts WKT through PostgREST. WKT points use
+      // longitude first (x), then latitude (y), in SRID 4326.
+      userUpdates['location'] = 'POINT($longitude $latitude)';
+      userUpdates['location_updated_at'] = DateTime.now()
+          .toUtc()
+          .toIso8601String();
+    }
+    if (userUpdates.isNotEmpty) {
+      try {
+        final rows = await _client
+            .from('users')
+            .update(userUpdates)
+            .eq('id', _userId)
+            .select('id');
+        if (rows.isEmpty) {
+          throw StateError(
+            'No encontramos tu perfil en public.users para actualizar la ubicación.',
+          );
+        }
+      } on PostgrestException catch (error) {
+        debugPrint(
+          'TinDog GPS: Supabase rechazó actualizar public.users '
+          '(${error.code}): ${error.message}',
+        );
+        throw StateError(
+          'Supabase rechazó actualizar public.users '
+          '(${error.code ?? 'sin código'}): ${error.message}. Confirma que '
+          'existan users.location/location_updated_at y la política '
+          'users_update_own.',
+        );
+      }
+    }
+    if (latitude != null && longitude != null) {
+      try {
+        final rows = await _client
+            .from('user_locations')
+            .upsert({
+              'user_id': _userId,
+              'latitude': latitude,
+              'longitude': longitude,
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            }, onConflict: 'user_id')
+            .select('user_id');
+        if (rows.isEmpty) {
+          throw StateError(
+            'Supabase no devolvió la fila guardada. Revisa las políticas '
+            'SELECT e INSERT/UPDATE de public.user_locations.',
+          );
+        }
+      } on PostgrestException catch (error) {
+        debugPrint(
+          'TinDog GPS: Supabase rechazó el upsert en user_locations '
+          '(${error.code}): ${error.message}',
+        );
+        throw StateError(
+          'Supabase rechazó el guardado (${error.code ?? 'sin código'}): '
+          '${error.message}. Revisa la tabla public.user_locations y sus '
+          'permisos RLS.',
+        );
+      }
     }
   }
 
   @override
   Future<void> logout() => _client.auth.signOut();
 
+  @override
+  Future<List<String>> availableBreeds() async {
+    final rows = await _client.from('breeds').select('name').order('name');
+    final names = rows
+        .map((row) => row['name']?.toString().trim() ?? '')
+        .where((name) => name.isNotEmpty)
+        .toSet()
+        .toList();
+    if (!names.any((name) => name.toLowerCase() == 'mestizo')) {
+      names.add('Mestizo');
+    }
+    names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return names;
+  }
+
+  @override
+  Future<int> discoveryDistanceKm() async {
+    final dogIds = await _myDogIds();
+    if (dogIds.isEmpty) return 100;
+    try {
+      final rows = await _client
+          .from('dog_preferences')
+          .select('dog_id,max_distance_km')
+          .inFilter('dog_id', dogIds);
+      final saved = {
+        for (final row in rows)
+          row['dog_id'].toString(): (row['max_distance_km'] as num?)?.toInt(),
+      };
+      final missingIds = dogIds.where((id) => !saved.containsKey(id)).toList();
+      if (missingIds.isNotEmpty) {
+        await _client.from('dog_preferences').upsert(
+          [
+            for (final id in missingIds)
+              {'dog_id': id, 'max_distance_km': 100},
+          ],
+          onConflict: 'dog_id',
+          ignoreDuplicates: true,
+        );
+      }
+      final selectedDistance = saved[dogIds.first];
+      final distance = saved.containsKey(dogIds.first)
+          ? selectedDistance ?? 25
+          : 100;
+      return distance.clamp(5, 100).toInt();
+    } on PostgrestException catch (error) {
+      debugPrint(
+        'TinDog: no se pudo leer la distancia preferida (${error.code}): ${error.message}',
+      );
+      return 25;
+    }
+  }
+
+  @override
+  Future<void> updateDiscoveryDistanceKm(int distanceKm) async {
+    final dogIds = await _myDogIds();
+    if (dogIds.isEmpty) return;
+    final distance = distanceKm.clamp(5, 100).toInt();
+    await _client.from('dog_preferences').upsert(
+      [
+        for (final id in dogIds)
+          {'dog_id': id, 'max_distance_km': distance},
+      ],
+      onConflict: 'dog_id',
+    );
+  }
+
   Future<List<String>> _myDogIds() async {
     final rows = await _client
         .from('dogs')
         .select('id')
         .eq('owner_id', _userId)
-        .eq('is_deleted', false);
+        .eq('is_deleted', false)
+        .order('created_at', ascending: false);
     return rows.map((row) => row['id'].toString()).toList();
   }
 
   @override
   Future<List<Dog>> discoverDogs() async {
-    final ownIds = (await _myDogIds()).toSet();
-    final seenIds = <String>{};
-    if (ownIds.isNotEmpty) {
-      final swipes = await _client
-          .from('swipes')
-          .select('target_dog_id')
-          .inFilter('swiper_dog_id', ownIds.toList());
-      seenIds.addAll(swipes.map((row) => row['target_dog_id'].toString()));
+    final ownDogIds = await _myDogIds();
+    if (ownDogIds.isEmpty) {
+      throw StateError(
+        'Primero registra un perfil de perro para ver candidatos.',
+      );
     }
 
-    final rows = await _client
-        .from('dogs')
-        .select()
-        .eq('is_visible', true)
-        .eq('is_deleted', false)
-        .order('created_at', ascending: false);
-    final candidates = rows
-        .where(
-          (row) =>
-              !ownIds.contains(row['id'].toString()) &&
-              !seenIds.contains(row['id'].toString()),
-        )
-        .toList();
-    return _hydrateDogs(candidates);
+    final candidates = <String, Dog>{};
+    for (final ownDogId in ownDogIds) {
+      dynamic result;
+      try {
+        result = await _client.rpc(
+          'get_candidates',
+          params: {
+            'p_dog_id': ownDogId,
+            'p_limit': 20,
+            'p_exclude_ids': <String>[],
+          },
+        );
+      } on PostgrestException catch (error) {
+        final message = error.message.toLowerCase();
+        if (message.contains('location_required')) {
+          throw StateError(
+            'Actualiza la ubicaci\u00f3n de tu cuenta para buscar candidatos.',
+          );
+        }
+        if (message.contains('dog_not_owned')) {
+          throw StateError('El perro elegido no pertenece a esta cuenta.');
+        }
+        if (message.contains('not_authenticated')) {
+          throw StateError('Inicia sesi\u00f3n para buscar candidatos.');
+        }
+        if (error.code == 'PGRST202') {
+          throw StateError(
+            'Supabase no encontr\u00f3 la funci\u00f3n get_candidates. Confirma que el script est\u00e9 aplicado en este proyecto.',
+          );
+        }
+        debugPrint(
+          'TinDog get_candidates rechaz\u00f3 la consulta (${error.code}): ${error.message}',
+        );
+        throw StateError(
+          'get_candidates fall\u00f3 (${error.code ?? 'sin c\u00f3digo'}): ${error.message}',
+        );
+      }
+
+      if (result is! List) {
+        throw StateError(
+          'Supabase devolvi\u00f3 una respuesta inv\u00e1lida de get_candidates.',
+        );
+      }
+      for (final value in result) {
+        if (value is! Map) {
+          throw StateError(
+            'Supabase devolvi\u00f3 un candidato con formato inv\u00e1lido.',
+          );
+        }
+        final row = Map<String, dynamic>.from(value);
+        final dog = await _dogFromCandidate(row, sourceDogId: ownDogId);
+        candidates.putIfAbsent(dog.id, () => dog);
+      }
+    }
+    return candidates.values.toList();
+  }
+  Future<Dog> _dogFromCandidate(
+    Map<String, dynamic> row, {
+    required String sourceDogId,
+  }) async {
+    final id = row['dog_id']?.toString() ?? '';
+    if (id.isEmpty) {
+      throw StateError('get_candidates devolvió un perro sin dog_id.');
+    }
+
+    String breedName(dynamic value) => value is Map
+        ? value['name']?.toString().trim() ?? ''
+        : value?.toString().trim() ?? '';
+
+    final mixed = row['is_mixed'] == true;
+    final breeds = [
+      breedName(row['breed']),
+      breedName(row['secondary_breed']),
+    ].where((name) => name.isNotEmpty).toList();
+    final breed = mixed
+        ? 'Mestizo'
+        : breeds.isEmpty
+        ? 'Raza no especificada'
+        : breeds.join(' / ');
+
+    final ageValue = row['age_months'];
+    final ageMonths = ageValue is num
+        ? ageValue.toInt()
+        : int.tryParse(ageValue?.toString() ?? '') ?? 0;
+    final distanceValue = row['distance_km'];
+    final scoreValue = row['score'];
+    final photos = row['photos'];
+    var photo = '';
+    if (photos is List && photos.isNotEmpty && photos.first is Map) {
+      final photoPath = (photos.first as Map)['url']?.toString() ?? '';
+      photo = await _resolvePhotoUrl(photoPath) ?? '';
+    }
+
+    final sex = switch (row['sex']?.toString().toLowerCase()) {
+      'female' => 'Hembra',
+      'male' => 'Macho',
+      'hembra' => 'Hembra',
+      'macho' => 'Macho',
+      _ => row['sex']?.toString() ?? '',
+    };
+
+    return Dog(
+      id: id,
+      sourceDogId: sourceDogId,
+      name: row['name']?.toString() ?? '',
+      breed: breed,
+      age: ageMonths ~/ 12,
+      intention:
+          row['mode']?.toString() ??
+          row['primary_intention']?.toString() ??
+          'playdate',
+      sex: sex,
+      location: 'GPS',
+      distanceKm: distanceValue is num ? distanceValue.toInt() : null,
+      compatibility: scoreValue is num ? scoreValue.toInt() : null,
+      vaccines: const {},
+      photo: photo,
+      about: row['bio']?.toString() ?? '',
+      color: '#FFDCCB',
+    );
   }
 
   @override
@@ -200,6 +569,13 @@ class SupabaseTinDogRepository implements TinDogRepository {
   @override
   Future<void> addDog(Dog dog) async {
     final userId = _userId;
+    if (dog.location.trim().isNotEmpty || dog.latitude != null) {
+      await _saveCurrentLocation(
+        dog.location,
+        latitude: dog.latitude,
+        longitude: dog.longitude,
+      );
+    }
     final id = _isUuid(dog.id) ? dog.id : _newUuid();
     final photoUrl = await _photoUrlFor(dog, id, userId);
     await _client.from('dogs').insert({
@@ -214,13 +590,19 @@ class SupabaseTinDogRepository implements TinDogRepository {
         'position': 0,
       });
     }
-    await _savePedigree(id, dog);
     await _saveHealthRecords(id, dog, userId);
   }
 
   @override
   Future<void> updateDog(Dog dog) async {
     final userId = _userId;
+    if (dog.location.trim().isNotEmpty || dog.latitude != null) {
+      await _saveCurrentLocation(
+        dog.location,
+        latitude: dog.latitude,
+        longitude: dog.longitude,
+      );
+    }
     final photoUrl = dog.photo.startsWith('picked:')
         ? await _photoUrlFor(dog, dog.id, userId)
         : null;
@@ -241,7 +623,6 @@ class SupabaseTinDogRepository implements TinDogRepository {
         'position': 0,
       });
     }
-    await _savePedigree(dog.id, dog);
     await _saveHealthRecords(dog.id, dog, userId);
   }
 
@@ -259,6 +640,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
   @override
   Future<String?> swipe(
     String dogId, {
+    String? sourceDogId,
     required bool liked,
     bool superLike = false,
   }) async {
@@ -269,7 +651,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
     final result = await _client.rpc(
       'swipe',
       params: {
-        'p_dog_id': myDogs.first,
+        'p_dog_id': sourceDogId ?? myDogs.first,
         'p_target_dog_id': dogId,
         'p_action': liked ? (superLike ? 'super_like' : 'like') : 'pass',
         'p_message': null,
@@ -293,7 +675,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
         'p_action': 'like',
         'p_message': ownDog == null
             ? null
-            : '${ownDog.name} y ${dog.name} podrÃ­an conocerse.',
+            : '${ownDog.name} y ${dog.name} podrían conocerse.',
       },
     );
     return _checkRpcResult(result);
@@ -379,7 +761,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
         'matchId': row['id'].toString(),
         'dogId': dog.id,
         'name': dog.name,
-        'lastMessage': lastMessage?['body'] ?? 'Â¡Ya hicieron match!',
+        'lastMessage': lastMessage?['body'] ?? '¡Ya hicieron match!',
         'time': _relativeTime(
           _parseDate(lastMessage?['sent_at'] ?? row['created_at']),
         ),
@@ -499,7 +881,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
   Future<void> sendMessage(String dogId, ChatMessage message) async {
     final conversation = await _conversationForDog(dogId);
     if (conversation == null) {
-      throw StateError('No hay una conversaciÃ³n activa con este perfil.');
+      throw StateError('No hay una conversación activa con este perfil.');
     }
     await _client.from('messages').insert({
       'conversation_id': conversation['id'],
@@ -552,7 +934,10 @@ class SupabaseTinDogRepository implements TinDogRepository {
     return _hydrateDogs(List<Map<String, dynamic>>.from(rows));
   }
 
-  Future<List<Dog>> _hydrateDogs(List<Map<String, dynamic>> rows) async {
+  Future<List<Dog>> _hydrateDogs(
+    List<Map<String, dynamic>> rows, {
+    Map<String, int> distanceByDogId = const {},
+  }) async {
     if (rows.isEmpty) return [];
     final ids = rows.map((row) => row['id'].toString()).toSet().toList();
     final breedIds = rows
@@ -590,25 +975,6 @@ class SupabaseTinDogRepository implements TinDogRepository {
       if (photoUrl == null) continue;
       photos.putIfAbsent(row['dog_id'].toString(), () => []).add(photoUrl);
     }
-    final pedigreeRows = await _optionalRows(
-      () async => await _client
-          .from('dog_pedigrees')
-          .select('dog_id,registration_number,verification_status')
-          .inFilter('dog_id', ids),
-    );
-    final verifiedRows = await _optionalRows(
-      () async => await _client
-          .from('dog_verified_pedigree')
-          .select('dog_id')
-          .inFilter('dog_id', ids),
-    );
-    final pedigrees = <String, Map<String, dynamic>>{};
-    for (final row in pedigreeRows) {
-      pedigrees[row['dog_id'].toString()] = row;
-    }
-    final verified = verifiedRows
-        .map((row) => row['dog_id'].toString())
-        .toSet();
     final healthRows = await _optionalRows(
       () async => await _client
           .from('dog_health_status')
@@ -691,10 +1057,6 @@ class SupabaseTinDogRepository implements TinDogRepository {
               secondaryBreed,
             ].whereType<String>().where((name) => name.isNotEmpty).join(' / ');
       final birthDate = DateTime.tryParse(row['birth_date']?.toString() ?? '');
-      final pedigree = pedigrees[id];
-      final approved =
-          verified.contains(id) ||
-          pedigree?['verification_status'] == 'approved';
       final health = vaccines[id] ?? const <String, String>{};
       final photoList = photos[id] ?? const <String>[];
       final sex = switch (row['sex']) {
@@ -702,6 +1064,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
         'male' => 'Macho',
         _ => row['sex']?.toString() ?? '',
       };
+      final distance = distanceByDogId[id];
       return Dog(
         id: id,
         name: row['name']?.toString() ?? '',
@@ -711,12 +1074,10 @@ class SupabaseTinDogRepository implements TinDogRepository {
         birthDate: birthDate,
         sex: sex,
         location:
-            cities[row['owner_id']?.toString()] ?? 'UbicaciÃ³n no disponible',
-        distanceKm: null,
+            cities[row['owner_id']?.toString()] ??
+            (distance == null ? 'Ubicación no disponible' : 'GPS'),
+        distanceKm: distance,
         compatibility: null,
-        pedigree: approved,
-        hasPedigree: approved || pedigree != null,
-        pedigreeNumber: pedigree?['registration_number']?.toString() ?? '',
         vaccines: health,
         vaccineAppliedOn: appliedDates[id] ?? const {},
         vaccineLabelPhotos: healthLabels[id] ?? const {},
@@ -754,7 +1115,7 @@ class SupabaseTinDogRepository implements TinDogRepository {
     final breedId = breedRows.isEmpty ? null : breedRows.first['id'];
     if (breedId == null && !mixed) {
       throw StateError(
-        'La raza debe coincidir con el catalogo. Si es mestizo, escribe Mestizo.',
+        'La raza debe coincidir con el cat\u00e1logo. Si es mestizo, escribe Mestizo.',
       );
     }
     final birthDate =
@@ -779,33 +1140,6 @@ class SupabaseTinDogRepository implements TinDogRepository {
       'is_visible': true,
       'is_deleted': false,
     };
-  }
-
-  Future<void> _savePedigree(String dogId, Dog dog) async {
-    final rows = await _client
-        .from('dog_pedigrees')
-        .select('verification_status,registration_number')
-        .eq('dog_id', dogId)
-        .limit(1);
-    final existing = rows.isEmpty ? null : rows.first;
-    if (existing?['verification_status'] == 'approved') return;
-
-    if (!dog.hasPedigree || dog.pedigreeNumber.trim().isEmpty) {
-      if (existing != null) {
-        await _client.from('dog_pedigrees').delete().eq('dog_id', dogId);
-      }
-      return;
-    }
-    if (existing?['registration_number'] == dog.pedigreeNumber.trim()) return;
-    if (existing != null) {
-      await _client.from('dog_pedigrees').delete().eq('dog_id', dogId);
-    }
-    await _client.from('dog_pedigrees').insert({
-      'dog_id': dogId,
-      'registry': 'FCM',
-      'registration_number': dog.pedigreeNumber.trim(),
-      'verification_status': 'pending',
-    });
   }
 
   Future<void> _saveHealthRecords(String dogId, Dog dog, String userId) async {
@@ -952,21 +1286,21 @@ class SupabaseTinDogRepository implements TinDogRepository {
   }
 
   String _rpcErrorMessage(String error) => switch (error) {
-    'not_authenticated' => 'Inicia sesiÃ³n para continuar.',
+    'not_authenticated' => 'Inicia sesión para continuar.',
     'dog_not_owned' => 'El perfil de tu perro no te pertenece.',
-    'target_not_found' => 'Este perfil ya no estÃ¡ disponible.',
-    'already_swiped' => 'Ya habÃ­as indicado interÃ©s en este perfil.',
+    'target_not_found' => 'Este perfil ya no está disponible.',
+    'already_swiped' => 'Ya habías indicado interés en este perfil.',
     'not_eligible' => 'Este perfil no cumple los requisitos para conectar.',
-    'daily_limit_reached' => 'Llegaste al lÃ­mite diario de solicitudes.',
+    'daily_limit_reached' => 'Llegaste al límite diario de solicitudes.',
     'pending_limit_reached' => 'Tienes demasiadas solicitudes pendientes.',
-    'request_not_found' => 'La solicitud ya no estÃ¡ disponible.',
+    'request_not_found' => 'La solicitud ya no está disponible.',
     'request_not_pending' => 'Esta solicitud ya fue respondida.',
-    'request_expired' => 'Esta solicitud ya venciÃ³.',
+    'request_expired' => 'Esta solicitud ya venció.',
     'my_dog_paused' => 'Activa el perfil de tu perro para aceptar.',
     'my_health_required' =>
       'Actualiza primero la cartilla de salud de tu perro.',
-    'request_cancelled' => 'La solicitud dejÃ³ de ser vÃ¡lida.',
-    _ => 'No se pudo completar la acciÃ³n ($error).',
+    'request_cancelled' => 'La solicitud dejó de ser válida.',
+    _ => 'No se pudo completar la acción ($error).',
   };
 
   String _dbSex(String value) => switch (value.toLowerCase()) {
@@ -1013,6 +1347,6 @@ class SupabaseTinDogRepository implements TinDogRepository {
     if (difference.inHours < 1) return 'Hace ${difference.inMinutes} min';
     if (difference.inDays < 1) return 'Hace ${difference.inHours} h';
     if (difference.inDays == 1) return 'Ayer';
-    return 'Hace ${difference.inDays} dÃ­as';
+    return 'Hace ${difference.inDays} días';
   }
 }

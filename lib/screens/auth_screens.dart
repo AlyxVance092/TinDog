@@ -12,7 +12,7 @@ import '../widgets/common.dart';
 import 'home_shell.dart';
 
 final _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$');
-final _passwordPattern = RegExp(r'^(?=.*[A-Z])(?=.*\d).{8,}$');
+final _passwordPattern = RegExp(r'^(?=.*[A-ZÁÉÍÓÚÜÑ])(?=.*[0-9]).{8,}$');
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({
@@ -35,8 +35,6 @@ class WelcomeScreen extends StatelessWidget {
       'location': 'CDMX',
       'distanceKm': 1,
       'compatibility': 98,
-      'pedigree': true,
-      'pedigreeNumber': '',
       'vaccines': {},
       'photo': 'assets/dogs/dog_01.svg',
       'about': '',
@@ -270,6 +268,7 @@ class _AuthScreenState extends State<AuthScreen> {
       });
       return;
     }
+    if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(
         builder: (_) => HomeShell(
@@ -367,7 +366,9 @@ class _AuthScreenState extends State<AuthScreen> {
                           obscureText: !_showPassword,
                           decoration: InputDecoration(
                             labelText: 'Contraseña',
-                            hintText: '8 caracteres, una mayúscula y un número',
+                            hintText: widget.register
+                                ? '8 caracteres, una mayúscula y un número'
+                                : 'Tu contraseña',
                             prefixIcon: const Icon(Icons.lock_outline_rounded),
                             suffixIcon: IconButton(
                               onPressed: () => setState(
@@ -380,9 +381,16 @@ class _AuthScreenState extends State<AuthScreen> {
                               ),
                             ),
                           ),
-                          validator: (v) => _passwordPattern.hasMatch(v ?? '')
-                              ? null
-                              : 'Usa 8+ caracteres, una mayúscula y un número',
+                          validator: (value) {
+                            if (!widget.register) {
+                              return (value ?? '').isEmpty
+                                  ? 'Escribe tu contraseña.'
+                                  : null;
+                            }
+                            return _passwordPattern.hasMatch(value ?? '')
+                                ? null
+                                : 'Usa 8+ caracteres, una mayúscula y un número';
+                          },
                         ),
                       ],
                     ),

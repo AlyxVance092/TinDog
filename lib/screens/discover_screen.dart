@@ -43,14 +43,13 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   String _activityLabel = 'MANADA CERCA';
   bool _activitySuccess = false;
   DateTime _lastSensorFrame = DateTime.fromMillisecondsSinceEpoch(0);
-  int _distance = 30;
-  bool _pedigreeOnly = false;
+  int _distance = 100;
   String _sex = 'Todos';
 
   @override
   void initState() {
     super.initState();
-    _future = _loadDogs();
+    _future = _loadDogs(refreshLocation: true);
     if (widget.active) _startSensor();
   }
 
@@ -91,13 +90,17 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     _sensor = null;
   }
 
-  Future<List<Dog>> _loadDogs() async {
+  Future<List<Dog>> _loadDogs({bool refreshLocation = false}) async {
+    if (refreshLocation && widget.repository.supportsDistanceFilter) {
+      await widget.repository.refreshDeviceLocation();
+    }
+    final savedDistance = await widget.repository.discoveryDistanceKm();
+    if (mounted) setState(() => _distance = savedDistance);
     final allDogs = await widget.repository.discoverDogs();
     final filtered = allDogs
         .where(
           (dog) =>
               (dog.distanceKm == null || dog.distanceKm! <= _distance) &&
-              (!_pedigreeOnly || dog.pedigree) &&
               (_sex == 'Todos' || dog.sex == _sex),
         )
         .toList();
@@ -116,7 +119,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   void _reload() => setState(() {
     _index = 0;
     _dogs = [];
-    _future = _loadDogs();
+    _future = _loadDogs(refreshLocation: true);
   });
 
   Future<void> _replayManada() async {
@@ -166,6 +169,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     try {
       swipeResult = await widget.repository.swipe(
         dog.id,
+        sourceDogId: dog.sourceDogId,
         liked: liked,
         superLike: superLike,
       );
@@ -199,7 +203,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         barrierDismissible: false,
         builder: (dialogContext) => MatchCelebration(
           dog: dog,
-          myDog: ownDogs.first,
+          myDog: ownDogs.firstWhere(
+            (mine) => mine.id == dog.sourceDogId,
+            orElse: () => ownDogs.first,
+          ),
           onChat: () {
             Navigator.pop(dialogContext);
             widget.onChat(dog.id, dog.name);
@@ -226,7 +233,6 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
   Future<void> _filters() async {
     var distance = _distance.toDouble();
-    var pedigree = _pedigreeOnly;
     var sex = _sex;
     final result = await showModalBottomSheet<_FilterPrefs>(
       context: context,
@@ -340,28 +346,12 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                           )
                           .toList(),
                     ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      activeThumbColor: TinColors.green,
-                      title: const Text(
-                        'Con pedigrí',
-                        style: TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      subtitle: const Text(
-                        'Solo perfiles con registro genealógico',
-                      ),
-                      value: pedigree,
-                      onChanged: (v) {
-                        HapticFeedback.selectionClick();
-                        setModal(() => pedigree = v);
-                      },
-                    ),
                     const SizedBox(height: 9),
                     PrimaryButton(
                       label: 'Ver perfiles',
                       onPressed: () => Navigator.pop(
                         context,
-                        _FilterPrefs(distance.round(), pedigree, sex),
+                        _FilterPrefs(distance.round(), sex),
                       ),
                     ),
                   ],
@@ -373,9 +363,18 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       ),
     );
     if (result != null) {
+      try {
+        await widget.repository.updateDiscoveryDistanceKm(result.distance);
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No se pudo guardar el radio de búsqueda: $error')),
+          );
+        }
+        return;
+      }
       setState(() {
         _distance = result.distance;
-        _pedigreeOnly = result.pedigree;
         _sex = result.sex;
         _index = 0;
         _dogs = [];
@@ -471,17 +470,25 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 }
                 if (snapshot.hasError) {
                   return _empty(
-                    'No pudimos cargar los perfiles.',
+                    snapshot.error is StateError
+                        ? (snapshot.error as StateError).message.toString()
+                        : 'No pudimos cargar los candidatos.',
                     Icons.wifi_off_rounded,
                     _reload,
                   );
                 }
                 if (_dogs.isEmpty || _index >= _dogs.length) {
                   return _empty(
-                    '¡Ya viste a toda la manada!',
+                    widget.repository.canReplayDiscovery
+                        ? '¡Ya viste a toda la manada!'
+                                        : 'No hay perros compatibles en el radio seleccionado. Revisa la ubicación, la visibilidad del perfil y que ambos perros tengan una intención compatible. Si ya se deslizaron antes, esos perfiles no vuelven a aparecer.',
                     Icons.pets_rounded,
-                    widget.repository.canReplayDiscovery ? _replayManada : null,
-                    button: 'Volver a ver perfiles',
+                    widget.repository.canReplayDiscovery
+                        ? _replayManada
+                        : _reload,
+                    button: widget.repository.canReplayDiscovery
+                        ? 'Volver a ver perfiles'
+                        : 'Buscar de nuevo',
                   );
                 }
                 return LayoutBuilder(
@@ -669,9 +676,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 }
 
 class _FilterPrefs {
-  const _FilterPrefs(this.distance, this.pedigree, this.sex);
+  const _FilterPrefs(this.distance, this.sex);
   final int distance;
-  final bool pedigree;
   final String sex;
 }
 
@@ -1166,12 +1172,6 @@ class _DogCard extends StatelessWidget {
                   ),
                 ),
               ),
-            if (dog.pedigree)
-              Positioned(
-                left: 14 + tilt.dx * 2,
-                top: 14 + tilt.dy * 2,
-                child: const VerifiedPill(),
-              ),
             if (dog.compatibility != null)
               Positioned(
                 right: 14 + tilt.dx * 3,
@@ -1287,27 +1287,6 @@ class _DogCard extends StatelessWidget {
                             ),
                           ),
                         ],
-                      ),
-                    ),
-                  if (dog.pedigree)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 9,
-                        vertical: 5,
-                      ),
-                      decoration: BoxDecoration(
-                        color: TinColors.green,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Text(
-                        'PEDIGRÍ VERIFICADO',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 9,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: .7,
-                        ),
                       ),
                     ),
                   Text(
